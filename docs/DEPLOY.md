@@ -1,21 +1,19 @@
 # Alpine 部署
 
 > 目标环境：Alpine Linux + OpenRC，静态 musl 二进制。
-> **注意**：HTTPS 入口（8443）与 ACME 通配证书尚未实现（M6）。当前版本只监听
-> HTTP 入口，控制通道也是明文，仅适合内网或临时联调，不要直接暴露到公网。
+> TLS 后端是纯 Rust（rustls-rustcrypto），交叉编译不需要 zig 或任何 C 工具链。
 
 ## 1. 构建
 
 在开发机（不是服务器）上交叉编译：
 
 ```sh
-brew install zig
-cargo install cargo-zigbuild
 ./scripts/build-musl.sh
 ```
 
-产物：`target/x86_64-unknown-linux-musl/release/sluice`，脚本会校验它是
-`statically linked`，否则直接失败。
+脚本自动补装缺失的 rustup target，用 `rust-lld` 完成 musl 链接。产物：
+`target/x86_64-unknown-linux-musl/release/sluice`（约 6 MB，static-pie），
+脚本会校验它是静态链接，否则直接失败。
 
 ## 2. 上传与安装
 

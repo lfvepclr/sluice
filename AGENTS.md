@@ -8,7 +8,7 @@
 | --- | --- |
 | [README.md](README.md) | 这是什么、怎么装、怎么配、怎么排障 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 分层、协议、数据流、关键决策、性能约束 |
-| `.agents/plans/` | 历史计划，命名 `YYYYMMDD-<标题>.md` |
+| `.agent/` | 历史计划，命名 `YYYYMMDDHHMM-<标题>.md` |
 
 改哪个目录，先读对应模块的文档注释（`src/**/mod.rs` 顶部）。
 

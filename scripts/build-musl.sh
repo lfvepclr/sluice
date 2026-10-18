@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # sluice 唯一的构建入口：交叉编译到 x86_64-unknown-linux-musl 静态二进制。
 #
-# 为什么需要 zig：TLS 后端用 ring，含 C 与汇编，rust-lld 单独无法完成 musl 链接。
-# 若将来换成纯 Rust 加密后端，可以去掉 zig，改回 linker = "rust-lld"。
+# 依赖树是纯 Rust（rustls-rustcrypto），链接器 rust-lld 即可完成 musl 交叉链接，
+# 不需要 zig、C 工具链或目标平台 sysroot。
 
 set -euo pipefail
 
@@ -18,12 +18,15 @@ need() {
 }
 
 need cargo "https://rustup.rs"
-need zig "brew install zig"
-need cargo-zigbuild "cargo install cargo-zigbuild"
+
+# 目标未安装时自动补装（rustup 管理，无需 root）
+if ! rustup target list --installed | grep -q "^$TARGET$"; then
+	printf '==> 安装 target %s\n' "$TARGET"
+	rustup target add "$TARGET"
+fi
 
 printf '==> 构建 %s\n' "$TARGET"
-CC_x86_64_unknown_linux_musl="zig cc" \
-	cargo zigbuild --release --target "$TARGET"
+cargo build --release --target "$TARGET"
 
 BIN="target/$TARGET/release/sluice"
 [ -f "$BIN" ] || {
@@ -34,7 +37,7 @@ BIN="target/$TARGET/release/sluice"
 printf '==> 校验产物\n'
 file "$BIN"
 
-if ! file "$BIN" | grep -q "statically linked"; then
+if ! file "$BIN" | grep -Eq "statically linked|static-pie linked"; then
 	printf '错误：产物不是静态链接，无法在 Alpine 上可靠运行\n' >&2
 	exit 1
 fi
