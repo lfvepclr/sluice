@@ -6,6 +6,7 @@
 pub mod acme;
 pub mod certgen;
 pub mod control;
+pub mod dnstxt;
 pub mod forward;
 pub mod ingress;
 pub mod tls;

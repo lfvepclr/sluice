@@ -104,8 +104,27 @@ pub struct ListenConfig {
     #[serde(default = "default_http")]
     pub http: SocketAddr,
     /// 设为 false 可关闭 HTTPS 入口。
-    #[serde(default = "default_https")]
+    #[serde(default = "default_https", deserialize_with = "de_optional_addr")]
     pub https: Option<SocketAddr>,
+}
+
+/// `https` 字段兼容三种写法：`false`（关闭）、地址字符串、缺省（默认 8443）。
+fn de_optional_addr<'de, D>(d: D) -> Result<Option<SocketAddr>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum AddrOrOff {
+        Off(bool),
+        Addr(SocketAddr),
+    }
+
+    match AddrOrOff::deserialize(d)? {
+        AddrOrOff::Off(false) => Ok(None),
+        AddrOrOff::Off(true) => Ok(default_https()),
+        AddrOrOff::Addr(addr) => Ok(Some(addr)),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -601,5 +620,30 @@ typo_field = 1
     fn egress_mode_roundtrip() {
         assert_eq!(EgressMode::default(), EgressMode::Server);
         assert_eq!(EgressMode::Local.to_string(), "local");
+    }
+
+    #[test]
+    fn https_false_disables_https() {
+        let text = r#"
+base_domain = "demo.duckdns.org"
+token = "0123456789abcdef"
+[listen]
+https = false
+"#;
+        let cfg: ServerConfig = toml::from_str(text).unwrap();
+        assert_eq!(cfg.listen.https, None);
+    }
+
+    #[test]
+    fn https_omitted_defaults_to_8443() {
+        let text = r#"
+base_domain = "demo.duckdns.org"
+token = "0123456789abcdef"
+"#;
+        let cfg: ServerConfig = toml::from_str(text).unwrap();
+        assert_eq!(
+            cfg.listen.https.map(|a| a.to_string()).as_deref(),
+            Some(DEFAULT_HTTPS)
+        );
     }
 }

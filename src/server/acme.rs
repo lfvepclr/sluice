@@ -189,6 +189,12 @@ async fn post_once(
         payload,
     );
 
+    // 排障开关：SLUICE_ACME_DEBUG=1 时打印实际发送的 JWS
+    if std::env::var("SLUICE_ACME_DEBUG").as_deref() == Ok("1") {
+        let payload_len = jws.get("payload").and_then(Value::as_str).map(str::len);
+        tracing::debug!(url = %url, ?payload_len, "ACME POST");
+    }
+
     let response = http_client::request(
         Method::POST,
         url,
@@ -341,11 +347,17 @@ pub fn txt_propagated(doh: &Value, expect: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 轮询 DoH 直到 TXT 生效。DuckDNS 传播通常 10–60 秒。
-async fn wait_txt(fqdn: &str, expect: &str, budget: Duration) -> Result<()> {
+/// 等待 TXT 生效。优先直查权威 NS 全副本一致性（无缓存问题），DoH 兜底。
+async fn wait_txt(fqdn: &str, zone_hint: &str, expect: &str, budget: Duration) -> Result<()> {
     let deadline = Instant::now() + budget;
 
     loop {
+        // 权威校验：多副本全部一致才算传播完成（LE 随机询问任意一台）
+        if super::dnstxt::verify_propagated(fqdn, zone_hint, expect).await {
+            return Ok(());
+        }
+
+        // DoH 兜底（权威探测因网络等原因失败时）
         let url = format!("https://dns.google/resolve?name={fqdn}&type=TXT");
         if let Ok(response) =
             http_client::request(Method::GET, &url, &[], None, Duration::from_secs(8)).await
@@ -446,6 +458,18 @@ pub async fn issue(cfg: &ServerConfig) -> Result<Issued> {
             truncate(&order_response.text(), 300)
         )
     })?;
+    // finalize URL 必须从订单对象读取：它与订单 URL 不同路径（/acme/finalize/...），
+    // 拼接 `{order_url}/finalize` 会落进 order 端点（只允许 POST-as-GET）
+    let finalize_url = order
+        .get("finalize")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "订单缺少 finalize 字段：{}",
+                truncate(&order.to_string(), 300)
+            )
+        })?
+        .to_string();
     let authz_url = order
         .get("authorizations")
         .and_then(Value::as_array)
@@ -498,7 +522,13 @@ pub async fn issue(cfg: &ServerConfig) -> Result<Issued> {
     duckdns_set(label, dns_token, Some(&txt_value)).await?;
 
     let fqdn = format!("_acme-challenge.{}", cfg.base_domain);
-    let wait = wait_txt(&fqdn, &txt_value, Duration::from_secs(120));
+    // DuckDNS 多副本同步需要 1–2 分钟，给足预算
+    let wait = wait_txt(
+        &fqdn,
+        &cfg.base_domain,
+        &txt_value,
+        Duration::from_secs(300),
+    );
 
     if let Err(e) = wait.await {
         let _ = duckdns_set(label, dns_token, None).await;
@@ -540,12 +570,7 @@ pub async fn issue(cfg: &ServerConfig) -> Result<Issued> {
     // finalize
     let (csr_der, key_der) = build_csr(&wildcard)?;
     let finalize_payload = json!({ "csr": b64u(&csr_der) });
-    let finalize = post(
-        &mut account,
-        &format!("{order_url}/finalize"),
-        Some(&finalize_payload),
-    )
-    .await?;
+    let finalize = post(&mut account, &finalize_url, Some(&finalize_payload)).await?;
     if !finalize.status.is_success() {
         anyhow::bail!("finalize 失败：{} {}", finalize.status, finalize.text());
     }
