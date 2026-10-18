@@ -6,7 +6,7 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use sluice::config::{self, ClientConfig, EgressMode, ServerConfig};
 
 #[derive(Debug, Parser)]
@@ -18,7 +18,7 @@ use sluice::config::{self, ClientConfig, EgressMode, ServerConfig};
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -91,7 +91,26 @@ fn main() -> ExitCode {
 
     let cli = Cli::parse();
 
-    let result = match cli.command {
+    // 裸跑：TTY 进向导，非 TTY 打帮助（绝不进 dialoguer，会挂死管道）
+    let command = match cli.command {
+        Some(command) => command,
+        None => {
+            if !std::io::stdin().is_terminal() {
+                let _ = Cli::command().print_help();
+                return ExitCode::SUCCESS;
+            }
+            match run_wizard() {
+                Ok(Some(command)) => command,
+                Ok(None) => return ExitCode::SUCCESS,
+                Err(err) => {
+                    eprintln!("错误：{err:#}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+    };
+
+    let result = match command {
         Command::Server { config } => run_server(&config).map(|_| 0),
         Command::Expose {
             port,
@@ -214,6 +233,101 @@ fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
         .worker_threads(1)
         .enable_all()
         .build()?)
+}
+
+/// 交互式向导：模式 → 端口 → 服务器 → 子域名/出口。只在 TTY 下进入。
+fn run_wizard() -> anyhow::Result<Option<Command>> {
+    use dialoguer::{Input, Password, Select};
+
+    let mode = Select::new()
+        .with_prompt("选择模式")
+        .items(&[
+            "expose —— 把本地端口暴露成公网地址",
+            "forward —— 按请求路径里的完整 URL 转发",
+        ])
+        .default(0)
+        .interact()?;
+
+    let command = if mode == 0 {
+        let port: u16 = Input::new()
+            .with_prompt("本地端口")
+            .default(8080)
+            .interact_text()?;
+        let server: String = Input::new()
+            .with_prompt("服务器地址（host:7835）")
+            .interact_text()?;
+        let token = match std::env::var("SLUICE_TOKEN") {
+            Ok(t) => {
+                println!("token：使用环境变量 SLUICE_TOKEN");
+                t
+            }
+            Err(_) => Password::new().with_prompt("token").interact()?,
+        };
+        let subdomain: String = Input::new()
+            .with_prompt("子域名（留空随机分配）")
+            .allow_empty(true)
+            .default(String::new())
+            .show_default(false)
+            .interact_text()?;
+
+        Command::Expose {
+            port,
+            server: Some(server),
+            token: Some(token),
+            subdomain: (!subdomain.is_empty()).then_some(subdomain),
+        }
+    } else {
+        let port: u16 = Input::new()
+            .with_prompt("本地监听端口")
+            .default(1234)
+            .interact_text()?;
+        let server: String = Input::new()
+            .with_prompt("服务器地址（host:7835，留空则本机直连出口）")
+            .allow_empty(true)
+            .default(String::new())
+            .show_default(false)
+            .interact_text()?;
+
+        let egress = if server.is_empty() {
+            println!("出口：local（未填服务器地址）");
+            "local".to_string()
+        } else {
+            let index = Select::new()
+                .with_prompt("出口位置")
+                .items(&[
+                    "server —— 经服务器出网（隐藏本机 IP）",
+                    "local —— 本机直连（延迟最低）",
+                ])
+                .default(0)
+                .interact()?;
+            if index == 0 {
+                "server".to_string()
+            } else {
+                "local".to_string()
+            }
+        };
+
+        let token = match std::env::var("SLUICE_TOKEN") {
+            Ok(t) => {
+                println!("token：使用环境变量 SLUICE_TOKEN");
+                t
+            }
+            Err(_) => Password::new()
+                .with_prompt("token")
+                .allow_empty_password(true)
+                .interact()?,
+        };
+
+        Command::Forward {
+            port,
+            bind: "127.0.0.1".into(),
+            server: (!server.is_empty()).then_some(server),
+            token: (!token.is_empty()).then_some(token),
+            egress: Some(egress),
+        }
+    };
+
+    Ok(Some(command))
 }
 
 /// 解析客户端连接参数：命令行 > 环境变量 > 配置文件。
