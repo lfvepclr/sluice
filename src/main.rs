@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use sluice::config::{self, ClientConfig, ServerConfig};
+use sluice::config::{self, ClientConfig, EgressMode, ServerConfig};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -168,13 +168,32 @@ fn run_expose(
 }
 
 fn run_forward(
-    _port: u16,
-    _bind: &str,
-    _server: Option<String>,
-    _token: Option<String>,
-    _egress: Option<&str>,
+    port: u16,
+    bind: &str,
+    server: Option<String>,
+    token: Option<String>,
+    egress: Option<&str>,
 ) -> anyhow::Result<()> {
-    anyhow::bail!("转发模式尚未实现（M7）")
+    let mut cfg = ClientConfig::load_default();
+    cfg.apply_env_overrides();
+
+    let server = server.or(cfg.server);
+    let token = token.or(cfg.token);
+
+    let egress = match egress {
+        Some("local") => EgressMode::Local,
+        Some("server") => EgressMode::Server,
+        Some(other) => anyhow::bail!("未知出口 `{other}`，只能是 server 或 local"),
+        None => cfg.egress,
+    };
+
+    runtime()?.block_on(sluice::agent::forward::run(
+        server,
+        token,
+        bind.to_string(),
+        port,
+        egress,
+    ))
 }
 
 fn run_doctor(_path: &Path) -> anyhow::Result<()> {

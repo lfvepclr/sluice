@@ -4,6 +4,7 @@
 //! 把 `serve` 的 IO 换成 TLS 流，路由逻辑完全复用。
 
 pub mod control;
+pub mod forward;
 pub mod ingress;
 pub mod tunnel;
 
@@ -30,6 +31,10 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
 
     println!("sluice {} 服务器启动", crate::VERSION);
     println!("  访问模板   http://{template}/");
+
+    if app.cfg.listen.https.is_some() {
+        tracing::warn!("HTTPS 入口尚未实现（M6），当前只有 HTTP 入口；控制通道也是明文");
+    }
 
     let control_app = app.clone();
     let ingress_app = app.clone();

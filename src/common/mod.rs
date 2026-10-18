@@ -6,4 +6,5 @@ pub mod body;
 pub mod headers;
 pub mod ssrf;
 pub mod subdomain;
+pub mod upstream;
 pub mod urlpath;

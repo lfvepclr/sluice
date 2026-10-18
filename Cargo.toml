@@ -25,13 +25,16 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 rand = "0.8"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 subtle = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time", "signal", "sync", "io-util", "net"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+webpki-roots = "0.26"
 yamux = "0.12"

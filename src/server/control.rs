@@ -152,22 +152,34 @@ async fn handle_connection(app: Arc<App>, socket: TcpStream, peer: SocketAddr) -
         return Ok(());
     }
 
-    let subdomain = match allocate(&app.registry, hello.want_subdomain.as_deref()) {
-        Ok(s) => s,
-        Err(code) => {
-            let msg = match code {
-                ErrorCode::SubdomainTaken => "子域名已被占用",
-                ErrorCode::SubdomainReserved => "子域名不可用（格式错误或为保留词）",
-                _ => "无法分配子域名",
-            };
-            reject(&mut control, code, msg).await;
-            return Ok(());
+    // forward 模式不需要公网子域名，只借用同一条控制通道
+    let is_forward = hello.mode == proto::Mode::Forward;
+    let subdomain = if is_forward {
+        String::new()
+    } else {
+        match allocate(&app.registry, hello.want_subdomain.as_deref()) {
+            Ok(s) => s,
+            Err(code) => {
+                let msg = match code {
+                    ErrorCode::SubdomainTaken => "子域名已被占用",
+                    ErrorCode::SubdomainReserved => "子域名不可用（格式错误或为保留词）",
+                    _ => "无法分配子域名",
+                };
+                reject(&mut control, code, msg).await;
+                return Ok(());
+            }
         }
     };
 
-    let public_url = format!("http://{}.{}", subdomain, app.cfg.base_domain);
+    let public_url = if is_forward {
+        format!("forward://{peer}")
+    } else {
+        format!("http://{}.{}", subdomain, app.cfg.base_domain)
+    };
     let session = Arc::new(Session::new(subdomain.clone(), hello.mode, mux));
-    app.registry.insert(session.clone());
+    if !is_forward {
+        app.registry.insert(session.clone());
+    }
 
     let ack = HelloAck {
         subdomain: subdomain.clone(),
@@ -179,11 +191,15 @@ async fn handle_connection(app: Arc<App>, socket: TcpStream, peer: SocketAddr) -
 
     tracing::info!(%peer, %public_url, mode = ?hello.mode, "会话已建立");
 
-    // 隧道模式下服务器主动开流，agent 不会开流；这里仍要排空入站队列，
-    // 否则驱动任务的通道会积压。forward 模式在 M7 接入真实处理。
+    // agent 开的入站流有两种来源：forward 模式的请求流（M7），
+    // 以及 expose 模式下不应该出现的流（直接丢弃）。
+    let fwd_app = app.clone();
     let drain = tokio::spawn(async move {
-        while inbound.recv().await.is_some() {
-            // 丢弃：M4 只有 expose 模式
+        while let Some(stream) = inbound.recv().await {
+            let app = fwd_app.clone();
+            tokio::spawn(async move {
+                super::forward::serve_stream(stream, app).await;
+            });
         }
     });
 
@@ -194,17 +210,19 @@ async fn handle_connection(app: Arc<App>, socket: TcpStream, peer: SocketAddr) -
     // 断线后保留子域名一段时间：agent 重连可复用同一个地址，
     // 期间访问该子域名返回 502 而不是 404，语义更准确。
     session.mark_offline();
-    let registry = app.registry.clone();
-    let reserved = app.cfg.limits.reserved_secs;
-    let sub = subdomain.clone();
-    let this = session.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(reserved)).await;
-        registry.remove_if_same(&sub, &this);
-        tracing::info!(subdomain = %sub, "保留期结束，子域名已释放");
-    });
+    if !is_forward {
+        let registry = app.registry.clone();
+        let reserved = app.cfg.limits.reserved_secs;
+        let sub = subdomain.clone();
+        let this = session.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(reserved)).await;
+            registry.remove_if_same(&sub, &this);
+            tracing::info!(subdomain = %sub, "保留期结束，子域名已释放");
+        });
+    }
 
-    tracing::info!(%public_url, "会话断开，子域名保留 {reserved}s");
+    tracing::info!(%public_url, "会话断开");
     Ok(())
 }
 

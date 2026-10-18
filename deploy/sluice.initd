@@ -1,0 +1,32 @@
+#!/sbin/openrc-run
+# sluice OpenRC 服务脚本（Alpine）
+#
+# 以非 root 用户运行，但保留绑定 80 端口的 capability，
+# 这样既不用 root，也不需要额外的端口转发规则。
+
+name="sluice"
+description="sluice 隧道与路径转发代理"
+
+command="/usr/local/bin/sluice"
+command_args="server --config ${SLUICE_CONF:-/etc/sluice/server.toml}"
+command_user="sluice:sluice"
+directory="/var/lib/sluice"
+
+# 只给绑定低端口的权限，其余能力全部丢弃
+capabilities="^cap_net_bind_service"
+
+# 崩溃自动拉起
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+respawn_period=60
+
+output_log="/var/log/sluice.log"
+error_log="/var/log/sluice.log"
+
+rc_ulimit="-n 65535"
+
+depend() {
+	need net
+	after firewall
+}

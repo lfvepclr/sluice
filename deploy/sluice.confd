@@ -1,0 +1,11 @@
+# sluice OpenRC 配置
+#
+# 修改后执行 rc-service sluice restart 生效。
+
+# 服务端配置文件路径
+SLUICE_CONF="/etc/sluice/server.toml"
+
+# 日志级别：error / warn / info / debug / trace
+# 也可以在 /etc/conf.d/sluice 里写 SLUICE_LOG=debug
+: "${SLUICE_LOG:=info}"
+export SLUICE_LOG
