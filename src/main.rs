@@ -204,8 +204,8 @@ fn run_doctor(path: &Path) -> anyhow::Result<u8> {
     Ok(sluice::doctor::exit_code(&checks) as u8)
 }
 
-fn run_bench(_out: &Path) -> anyhow::Result<()> {
-    anyhow::bail!("bench 尚未实现（M9）")
+fn run_bench(out: &Path) -> anyhow::Result<()> {
+    runtime()?.block_on(sluice::bench::run(out, sluice::bench::Opts::default()))
 }
 
 /// 单核服务器：固定一个 worker，避免线程切换开销。
