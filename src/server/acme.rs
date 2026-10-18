@@ -41,6 +41,16 @@ fn b64u(data: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(data)
 }
 
+/// 错误日志里附带的响应体截断，防止刷屏。
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(max).collect();
+        format!("{head}…")
+    }
+}
+
 fn jwk(key: &SigningKey) -> Value {
     let point = key.verifying_key().to_encoded_point(false);
     let x = point.x().map(|v| b64u(v)).unwrap_or_default();
@@ -143,8 +153,30 @@ async fn fetch_nonce(directory: &Directory) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("响应缺少 Replay-Nonce"))
 }
 
-/// 发一个已签名的 POST。
+/// 发一个已签名的 POST。nonce 失效（badNonce）时自动重试一次。
 async fn post(
+    account: &mut Account,
+    url: &str,
+    payload: Option<&Value>,
+) -> Result<http_client::Response> {
+    let mut response = post_once(account, url, payload).await?;
+
+    // RFC 8555 §6.5：服务器可能判定 nonce 失效，换新 nonce 重试一次
+    let is_bad_nonce = response.status.as_u16() == 400
+        && serde_json::from_slice::<Value>(&response.body)
+            .ok()
+            .and_then(|v| v.get("type").and_then(Value::as_str).map(|t| t.to_string()))
+            .is_some_and(|t| t.ends_with("badNonce"));
+
+    if is_bad_nonce {
+        tracing::debug!("nonce 失效，已换新重试");
+        response = post_once(account, url, payload).await?;
+    }
+
+    Ok(response)
+}
+
+async fn post_once(
     account: &mut Account,
     url: &str,
     payload: Option<&Value>,
@@ -407,7 +439,13 @@ pub async fn issue(cfg: &ServerConfig) -> Result<Issued> {
         .ok_or_else(|| anyhow::anyhow!("下单未返回 Location"))?
         .to_string();
 
-    let order: Value = serde_json::from_slice(&order_response.body)?;
+    let order: Value = serde_json::from_slice(&order_response.body).map_err(|e| {
+        anyhow::anyhow!(
+            "订单响应不是 JSON：{} {}（{e}）",
+            order_response.status,
+            truncate(&order_response.text(), 300)
+        )
+    })?;
     let authz_url = order
         .get("authorizations")
         .and_then(Value::as_array)
@@ -418,7 +456,13 @@ pub async fn issue(cfg: &ServerConfig) -> Result<Issued> {
 
     // 取 DNS-01 challenge
     let authz_response = post(&mut account, &authz_url, None).await?;
-    let authz: Value = serde_json::from_slice(&authz_response.body)?;
+    let authz: Value = serde_json::from_slice(&authz_response.body).map_err(|e| {
+        anyhow::anyhow!(
+            "authorization 响应不是 JSON：{} {}（{e}）",
+            authz_response.status,
+            truncate(&authz_response.text(), 300)
+        )
+    })?;
     let challenge = authz
         .get("challenges")
         .and_then(Value::as_array)
@@ -426,7 +470,15 @@ pub async fn issue(cfg: &ServerConfig) -> Result<Issued> {
             list.iter()
                 .find(|c| c.get("type").and_then(Value::as_str) == Some("dns-01"))
         })
-        .ok_or_else(|| anyhow::anyhow!("authorization 里没有 dns-01"))?;
+        .ok_or_else(|| {
+            // 响应可能是 problem+json（如 badNonce / userActionRequired），
+            // 把原文体带出来才能定位
+            anyhow::anyhow!(
+                "authorization 里没有 dns-01：HTTP {} {}",
+                authz_response.status,
+                truncate(&authz_response.text(), 300)
+            )
+        })?;
 
     let token = challenge
         .get("token")
