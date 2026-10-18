@@ -7,6 +7,7 @@ pub mod certgen;
 pub mod control;
 pub mod forward;
 pub mod ingress;
+pub mod tls;
 pub mod tunnel;
 
 use std::sync::Arc;
@@ -33,16 +34,23 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
     println!("sluice {} 服务器启动", crate::VERSION);
     println!("  访问模板   http://{template}/");
 
-    if app.cfg.listen.https.is_some() {
-        tracing::warn!("HTTPS 入口尚未实现（M6），当前只有 HTTP 入口；控制通道也是明文");
-    }
+    let cert_store = build_cert_store(&app.cfg)?;
 
     let control_app = app.clone();
     let ingress_app = app.clone();
+    let https_app = app.clone();
+    let https_acceptor = match (&app.cfg.listen.https, &cert_store) {
+        (Some(_), Some(store)) => Some(tls::acceptor(store.clone())?),
+        _ => None,
+    };
+    let https_addr = app.cfg.listen.https;
 
     let mut tasks = tokio::task::JoinSet::new();
     tasks.spawn(async move { control::serve(control_app, control_addr).await });
-    tasks.spawn(async move { ingress::serve(ingress_app, http_addr).await });
+    tasks.spawn(async move { ingress::serve(ingress_app, http_addr, "http", None).await });
+    if let (Some(addr), Some(acceptor)) = (https_addr, https_acceptor) {
+        tasks.spawn(async move { ingress::serve(https_app, addr, "https", Some(acceptor)).await });
+    }
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
@@ -59,4 +67,42 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
 
     tasks.shutdown().await;
     Ok(())
+}
+
+/// 按 `tls.mode` 准备证书。
+fn build_cert_store(cfg: &ServerConfig) -> anyhow::Result<Option<Arc<tls::CertStore>>> {
+    use crate::config::TlsMode;
+
+    let wildcard = format!("*.{}", cfg.base_domain);
+
+    let store = match cfg.tls.mode {
+        TlsMode::SelfSigned => {
+            tracing::warn!("使用自签证书：浏览器会提示不安全，仅适合本地联调");
+            tls::CertStore::self_signed(
+                &[cfg.base_domain.as_str(), wildcard.as_str(), "localhost"],
+                365,
+            )?
+        }
+        TlsMode::Files => {
+            let (cert, key) = tls::load_files(&cfg.tls.cert_dir)?;
+            tls::CertStore::from_der(cert, key)?
+        }
+        TlsMode::Acme => {
+            // ACME 尚未接入：优先复用已有证书，没有就退回自签并明确告警
+            match tls::load_files(&cfg.tls.cert_dir) {
+                Ok((cert, key)) => tls::CertStore::from_der(cert, key)?,
+                Err(_) => {
+                    tracing::warn!(
+                        "tls.mode = acme 但未找到可用证书，暂用自签证书；ACME 自动签发尚未实现"
+                    );
+                    tls::CertStore::self_signed(
+                        &[cfg.base_domain.as_str(), wildcard.as_str(), "localhost"],
+                        7,
+                    )?
+                }
+            }
+        }
+    };
+
+    Ok(Some(store))
 }

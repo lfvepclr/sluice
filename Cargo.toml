@@ -16,6 +16,7 @@ strip = true
 
 [dependencies]
 anyhow = "1"
+arc-swap = "1"
 base64 = "0.22"
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
@@ -26,6 +27,7 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 rand = "0.8"
+rustls-pemfile = "2"
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 rustls-rustcrypto = "0.0.2-alpha"
 serde = { version = "1", features = ["derive"] }
