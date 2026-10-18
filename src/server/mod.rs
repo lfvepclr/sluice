@@ -46,10 +46,18 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
     let https_addr = app.cfg.listen.https;
 
     let mut tasks = tokio::task::JoinSet::new();
-    let control_acceptor = match &cert_store {
-        Some(store) => Some(tls::acceptor(store.clone())?),
-        None => None,
-    };
+    // 控制面用独立的长效自签证书：入口证书走 ACME 续期时会换 SPKI，
+    // 若与控制面共用，所有 pin 过指纹的 agent 会集体失联。
+    let control_wildcard = format!("*.{}", app.cfg.base_domain);
+    let control_store = tls::CertStore::self_signed(
+        &[
+            app.cfg.base_domain.as_str(),
+            control_wildcard.as_str(),
+            "localhost",
+        ],
+        3650,
+    )?;
+    let control_acceptor = Some(tls::acceptor(control_store)?);
     tasks.spawn(async move { control::serve(control_app, control_addr, control_acceptor).await });
     tasks.spawn(async move { ingress::serve(ingress_app, http_addr, "http", None).await });
     if let (Some(addr), Some(acceptor)) = (https_addr, https_acceptor) {

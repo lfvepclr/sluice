@@ -35,6 +35,7 @@ sha2 = "0.10"
 serde_json = "1"
 subtle = "2"
 thiserror = "2"
+url = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time", "signal", "sync", "io-util", "net"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
 tokio-util = { version = "0.7", features = ["compat"] }
