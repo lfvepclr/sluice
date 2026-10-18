@@ -1,0 +1,17 @@
+/target
+**/*.rs.bk
+
+# 运行时产物
+*.log
+/state/
+certs/
+*.pem
+*.key
+
+# 本地配置与密钥
+.env
+.env.*
+server.toml
+
+# 系统
+.DS_Store

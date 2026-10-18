@@ -1,0 +1,14 @@
+[source.crates-io]
+replace-with = 'rsproxy-sparse'
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+
+[net]
+git-fetch-with-cli = true
+
+# musl 目标的链接器由 scripts/build-musl.sh 通过 cargo-zigbuild 注入
+# （ring 含 C/汇编，需要 zig cc；单纯 rust-lld 无法完成链接）。
+# 若将来把 TLS 后端换成纯 Rust 实现，可在此处改回：
+# [target.x86_64-unknown-linux-musl]
+# linker = "rust-lld"
