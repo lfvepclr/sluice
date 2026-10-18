@@ -23,8 +23,11 @@ pub async fn run(
     local_port: u16,
     want_subdomain: Option<String>,
 ) -> anyhow::Result<()> {
-    let socket = TcpStream::connect(server).await?;
-    let _ = socket.set_nodelay(true);
+    let expected_pin = std::env::var("SLUICE_SPKI_SHA256").ok();
+    let (socket, pin) = crate::agent::tls::connect(server, expected_pin.as_deref()).await?;
+    if expected_pin.is_none() {
+        tracing::info!(pin = %pin, "服务器证书指纹（写入 SLUICE_SPKI_SHA256 可固定）");
+    }
 
     let (mux, mut inbound, join) =
         transport::spawn(socket, YamuxMode::Client, transport::default_config());

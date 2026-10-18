@@ -1521,6 +1521,7 @@ dependencies = [
  "rustls-rustcrypto",
  "serde",
  "serde_json",
+ "sha2",
  "signature",
  "spki",
  "subtle",

@@ -46,7 +46,11 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
     let https_addr = app.cfg.listen.https;
 
     let mut tasks = tokio::task::JoinSet::new();
-    tasks.spawn(async move { control::serve(control_app, control_addr).await });
+    let control_acceptor = match &cert_store {
+        Some(store) => Some(tls::acceptor(store.clone())?),
+        None => None,
+    };
+    tasks.spawn(async move { control::serve(control_app, control_addr, control_acceptor).await });
     tasks.spawn(async move { ingress::serve(ingress_app, http_addr, "http", None).await });
     if let (Some(addr), Some(acceptor)) = (https_addr, https_acceptor) {
         tasks.spawn(async move { ingress::serve(https_app, addr, "https", Some(acceptor)).await });

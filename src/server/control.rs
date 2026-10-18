@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use dashmap::DashMap;
 use subtle::ConstantTimeEq;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
+use tokio_rustls::TlsAcceptor;
 use yamux::Mode;
 
 use super::App;
@@ -96,28 +97,43 @@ impl Default for Registry {
 }
 
 /// 控制面监听循环。
-pub async fn serve(app: Arc<App>, addr: SocketAddr) -> anyhow::Result<()> {
+pub async fn serve(
+    app: Arc<App>,
+    addr: SocketAddr,
+    acceptor: Option<TlsAcceptor>,
+) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
-    tracing::info!(%addr, "控制面就绪");
+    tracing::info!(%addr, tls = acceptor.is_some(), "控制面就绪");
 
     loop {
         let (socket, peer) = listener.accept().await?;
         let app = app.clone();
+        let acceptor = acceptor.clone();
+
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(app, socket, peer).await {
-                tracing::debug!(%peer, error = %e, "会话结束");
+            match acceptor {
+                None => {
+                    if let Err(e) = handle_connection(app, socket, peer).await {
+                        tracing::debug!(%peer, error = %e, "会话结束");
+                    }
+                }
+                Some(acceptor) => match acceptor.accept(socket).await {
+                    Ok(tls) => {
+                        if let Err(e) = handle_connection(app, tls, peer).await {
+                            tracing::debug!(%peer, error = %e, "会话结束");
+                        }
+                    }
+                    Err(e) => tracing::debug!(%peer, error = %e, "控制通道 TLS 握手失败"),
+                },
             }
         });
     }
 }
 
-async fn handle_connection(
-    app: Arc<App>,
-    socket: TcpStream,
-    peer: SocketAddr,
-) -> anyhow::Result<()> {
-    let _ = socket.set_nodelay(true);
-
+async fn handle_connection<S>(app: Arc<App>, socket: S, peer: SocketAddr) -> anyhow::Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let (mux, mut inbound, join) =
         transport::spawn(socket, Mode::Server, transport::default_config());
 

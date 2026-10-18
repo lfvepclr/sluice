@@ -15,7 +15,7 @@ use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use tokio::io::AsyncWriteExt;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use yamux::{Mode as YamuxMode, Stream};
 
 use crate::common::body::{BoxError, BoxedBody, text};
@@ -123,8 +123,11 @@ fn is_loopback(bind: &str) -> bool {
 }
 
 async fn connect(server: &str, token: &str) -> anyhow::Result<MuxHandle> {
-    let socket = TcpStream::connect(server).await?;
-    let _ = socket.set_nodelay(true);
+    let expected_pin = std::env::var("SLUICE_SPKI_SHA256").ok();
+    let (socket, pin) = crate::agent::tls::connect(server, expected_pin.as_deref()).await?;
+    if expected_pin.is_none() {
+        tracing::info!(pin = %pin, "服务器证书指纹（写入 SLUICE_SPKI_SHA256 可固定）");
+    }
 
     let (mux, _inbound, _join) =
         transport::spawn(socket, YamuxMode::Client, transport::default_config());
