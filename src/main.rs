@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -91,26 +92,27 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Command::Server { config } => run_server(&config),
+        Command::Server { config } => run_server(&config).map(|_| 0),
         Command::Expose {
             port,
             server,
             token,
             subdomain,
-        } => run_expose(port, server, token, subdomain),
+        } => run_expose(port, server, token, subdomain).map(|_| 0),
         Command::Forward {
             port,
             bind,
             server,
             token,
             egress,
-        } => run_forward(port, &bind, server, token, egress.as_deref()),
+        } => run_forward(port, &bind, server, token, egress.as_deref()).map(|_| 0),
         Command::Doctor { config } => run_doctor(&config),
-        Command::Bench { out } => run_bench(&out),
+        Command::Bench { out } => run_bench(&out).map(|_| 0),
     };
 
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(0) => ExitCode::SUCCESS,
+        Ok(code) => ExitCode::from(code),
         Err(err) => {
             // 配置类错误用退出码 2，便于 OpenRC 与脚本区分「配置问题」和「运行期故障」
             if err.downcast_ref::<config::ConfigError>().is_some() {
@@ -191,8 +193,15 @@ fn run_forward(
     ))
 }
 
-fn run_doctor(_path: &Path) -> anyhow::Result<()> {
-    anyhow::bail!("doctor 尚未实现（M8）")
+fn run_doctor(path: &Path) -> anyhow::Result<u8> {
+    // 配置加载失败（含 ConfigError）向上抛，由 main 映射为退出码 2
+    let cfg = ServerConfig::load(path)?;
+    config::check_permissions(path);
+
+    let checks = runtime()?.block_on(sluice::doctor::run(&cfg, path))?;
+    let tty = std::io::stdout().is_terminal();
+    sluice::doctor::print(&checks, tty);
+    Ok(sluice::doctor::exit_code(&checks) as u8)
 }
 
 fn run_bench(_out: &Path) -> anyhow::Result<()> {

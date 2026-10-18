@@ -12,6 +12,7 @@ pub mod config;
 pub mod doctor;
 pub mod proto;
 pub mod server;
+pub mod sys;
 pub mod transport;
 
 /// 版本号，取自 Cargo.toml。
