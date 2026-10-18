@@ -1,7 +1,7 @@
 //! 服务器端：控制面、入口路由、隧道转发。
 //!
-//! M4 阶段只做明文 HTTP 入口；8443 的 TLS 入口与 ACME 在 M6 接入，届时只需
-//! 把 `serve` 的 IO 换成 TLS 流，路由逻辑完全复用。
+//! `ServerHandle::start` 负责绑定与任务编排，`run` 只是在它之上等待退出信号——
+//! 这样测试与 bench 可以在进程内起一个完整服务器。
 
 pub mod acme;
 pub mod certgen;
@@ -11,7 +11,11 @@ pub mod ingress;
 pub mod tls;
 pub mod tunnel;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
+
+use tokio::net::TcpListener;
+use tokio_rustls::TlsAcceptor;
 
 use crate::config::ServerConfig;
 
@@ -21,69 +25,123 @@ pub struct App {
     pub registry: Arc<control::Registry>,
 }
 
-/// 启动服务器：控制面 + HTTP 入口，等待退出信号。
-pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
-    let control_addr = cfg.listen.control;
-    let http_addr = cfg.listen.http;
-    let template = cfg.public_url_template();
+/// 运行中的服务器：监听地址（`:0` 会回填实际端口）+ 全部后台任务。
+pub struct ServerHandle {
+    /// 控制面地址（agent 连这里）。
+    pub control: SocketAddr,
+    /// HTTP 入口地址。
+    pub http: SocketAddr,
+    /// HTTPS 入口地址（未启用时为 `None`）。
+    pub https: Option<SocketAddr>,
+    pub app: Arc<App>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
 
-    let app = Arc::new(App {
-        cfg: Arc::new(cfg),
-        registry: Arc::new(control::Registry::new()),
-    });
+impl ServerHandle {
+    /// 启动服务器。监听地址取自 `cfg.listen`，绑 `:0` 可以拿到随机端口。
+    pub async fn start(cfg: ServerConfig) -> anyhow::Result<Self> {
+        let app = Arc::new(App {
+            cfg: Arc::new(cfg),
+            registry: Arc::new(control::Registry::new()),
+        });
+
+        let (cert_store, acme_bootstrap) = build_cert_store(&app.cfg)?;
+
+        let control_listener = TcpListener::bind(app.cfg.listen.control).await?;
+        let control = control_listener.local_addr()?;
+        let http_listener = TcpListener::bind(app.cfg.listen.http).await?;
+        let http = http_listener.local_addr()?;
+
+        let https_listener = match app.cfg.listen.https {
+            Some(addr) => {
+                let listener = TcpListener::bind(addr).await?;
+                let addr = listener.local_addr()?;
+                Some((listener, addr))
+            }
+            None => None,
+        };
+        let https = https_listener.as_ref().map(|(_, addr)| *addr);
+        let https_acceptor: Option<TlsAcceptor> = match &https_listener {
+            Some(_) => Some(tls::acceptor(cert_store.clone())?),
+            None => None,
+        };
+
+        // ACME 后台任务要在进入事件循环之前启动，否则监听不退出就永远轮不到它
+        if app.cfg.tls.mode == crate::config::TlsMode::Acme {
+            acme::spawn(app.cfg.clone(), cert_store.clone(), acme_bootstrap);
+        }
+
+        let mut tasks = Vec::new();
+        // 控制面用独立的长效自签证书：入口证书走 ACME 续期时会换 SPKI，
+        // 若与控制面共用，所有 pin 过指纹的 agent 会集体失联。
+        let control_wildcard = format!("*.{}", app.cfg.base_domain);
+        let control_store = tls::CertStore::self_signed(
+            &[
+                app.cfg.base_domain.as_str(),
+                control_wildcard.as_str(),
+                "localhost",
+            ],
+            3650,
+        )?;
+        let control_acceptor = Some(tls::acceptor(control_store)?);
+        let control_app = app.clone();
+        tasks.push(tokio::spawn(async move {
+            if let Err(e) =
+                control::serve_listener(control_app, control_listener, control_acceptor).await
+            {
+                tracing::error!(error = %e, "控制面任务出错");
+            }
+        }));
+
+        let ingress_app = app.clone();
+        tasks.push(tokio::spawn(async move {
+            if let Err(e) = ingress::serve_listener(ingress_app, http_listener, "http", None).await
+            {
+                tracing::error!(error = %e, "HTTP 入口任务出错");
+            }
+        }));
+
+        if let (Some((listener, _)), Some(acceptor)) = (https_listener, https_acceptor) {
+            let https_app = app.clone();
+            tasks.push(tokio::spawn(async move {
+                if let Err(e) =
+                    ingress::serve_listener(https_app, listener, "https", Some(acceptor)).await
+                {
+                    tracing::error!(error = %e, "HTTPS 入口任务出错");
+                }
+            }));
+        }
+
+        Ok(Self {
+            control,
+            http,
+            https,
+            app,
+            tasks,
+        })
+    }
+
+    /// 停止全部监听任务。
+    pub async fn shutdown(mut self) {
+        for task in self.tasks.drain(..) {
+            task.abort();
+        }
+    }
+}
+
+/// 启动服务器：控制面 + HTTP/HTTPS 入口，等待退出信号。
+pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
+    let template = cfg.public_url_template();
+    let handle = ServerHandle::start(cfg).await?;
 
     println!("sluice {} 服务器启动", crate::VERSION);
     println!("  访问模板   http://{template}/");
 
-    let (cert_store, acme_bootstrap) = build_cert_store(&app.cfg)?;
+    // 监听任务异常退出时各自打日志并结束进程由 OpenRC 兜底重启
+    tokio::signal::ctrl_c().await.ok();
+    tracing::info!("收到退出信号，正在关闭");
 
-    let control_app = app.clone();
-    let ingress_app = app.clone();
-    let https_app = app.clone();
-    let https_acceptor = match &app.cfg.listen.https {
-        Some(_) => Some(tls::acceptor(cert_store.clone())?),
-        None => None,
-    };
-    let https_addr = app.cfg.listen.https;
-
-    // ACME 后台任务要在进入事件循环之前启动，否则监听不退出就永远轮不到它
-    if app.cfg.tls.mode == crate::config::TlsMode::Acme {
-        acme::spawn(app.cfg.clone(), cert_store.clone(), acme_bootstrap);
-    }
-
-    let mut tasks = tokio::task::JoinSet::new();
-    // 控制面用独立的长效自签证书：入口证书走 ACME 续期时会换 SPKI，
-    // 若与控制面共用，所有 pin 过指纹的 agent 会集体失联。
-    let control_wildcard = format!("*.{}", app.cfg.base_domain);
-    let control_store = tls::CertStore::self_signed(
-        &[
-            app.cfg.base_domain.as_str(),
-            control_wildcard.as_str(),
-            "localhost",
-        ],
-        3650,
-    )?;
-    let control_acceptor = Some(tls::acceptor(control_store)?);
-    tasks.spawn(async move { control::serve(control_app, control_addr, control_acceptor).await });
-    tasks.spawn(async move { ingress::serve(ingress_app, http_addr, "http", None).await });
-    if let (Some(addr), Some(acceptor)) = (https_addr, https_acceptor) {
-        tasks.spawn(async move { ingress::serve(https_app, addr, "https", Some(acceptor)).await });
-    }
-
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("收到退出信号，正在关闭");
-        }
-        Some(result) = tasks.join_next() => {
-            match result {
-                Ok(Ok(())) => tracing::warn!("某个监听任务提前结束"),
-                Ok(Err(e)) => tracing::error!(error = %e, "监听任务出错"),
-                Err(e) => tracing::error!(error = %e, "监听任务 panic"),
-            }
-        }
-    }
-
-    tasks.shutdown().await;
+    handle.shutdown().await;
     Ok(())
 }
 

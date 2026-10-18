@@ -104,7 +104,15 @@ pub async fn serve(
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(%addr, tls = acceptor.is_some(), "控制面就绪");
+    serve_listener(app, listener, acceptor).await
+}
 
+/// 使用已绑定的监听器服务（便于测试与 benchmark 用 `:0` 端口）。
+pub async fn serve_listener(
+    app: Arc<App>,
+    listener: TcpListener,
+    acceptor: Option<TlsAcceptor>,
+) -> anyhow::Result<()> {
     loop {
         let (socket, peer) = listener.accept().await?;
         let app = app.clone();

@@ -16,20 +16,50 @@ use crate::common::upgrade;
 use crate::proto::{self, Frame, Hello, MAX_FRAME_LEN, Mode};
 use crate::transport;
 
-/// 连接服务器并把本地端口暴露出去。函数在会话期间一直不返回。
-pub async fn run(
+/// 已建立的 expose 会话：握手完成，等待入站流并转发到本地端口。
+pub struct ExposeSession {
+    /// 服务器的握手应答（含分配的子域名与公网地址）。
+    pub ack: proto::HelloAck,
+    /// 保活多路复用驱动：句柄被丢弃时驱动循环会退出、连接随即关闭。
+    _mux: transport::MuxHandle,
+    inbound: tokio::sync::mpsc::UnboundedReceiver<yamux::Stream>,
+    join: tokio::task::JoinHandle<()>,
+    local_port: u16,
+}
+
+impl ExposeSession {
+    /// 消费会话：逐条把入站流转发到本地端口，直到与服务器断开。
+    pub async fn serve(mut self) -> anyhow::Result<()> {
+        let local = format!("127.0.0.1:{}", self.local_port);
+
+        while let Some(stream) = self.inbound.recv().await {
+            let local = local.clone();
+            tokio::spawn(async move {
+                if let Err(e) = serve_stream(stream, local).await {
+                    tracing::debug!(error = %e, "单条隧道流结束");
+                }
+            });
+        }
+
+        let _ = self.join.await;
+        anyhow::bail!("与服务器的连接已断开")
+    }
+}
+
+/// 连接服务器并完成握手，返回可服务的会话。
+pub async fn connect(
     server: &str,
     token: &str,
     local_port: u16,
     want_subdomain: Option<String>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ExposeSession> {
     let expected_pin = std::env::var("SLUICE_SPKI_SHA256").ok();
     let (socket, pin) = crate::agent::tls::connect(server, expected_pin.as_deref()).await?;
     if expected_pin.is_none() {
         tracing::info!(pin = %pin, "服务器证书指纹（写入 SLUICE_SPKI_SHA256 可固定）");
     }
 
-    let (mux, mut inbound, join) =
+    let (mux, inbound, join) =
         transport::spawn(socket, YamuxMode::Client, transport::default_config());
 
     let mut control = transport::into_tokio(mux.open().await?);
@@ -38,31 +68,39 @@ pub async fn run(
     hello.local_port = Some(local_port);
     proto::write_frame(&mut control, &Frame::Hello(hello)).await?;
 
-    match proto::read_frame(&mut control, MAX_FRAME_LEN).await? {
+    let ack = match proto::read_frame(&mut control, MAX_FRAME_LEN).await? {
         Frame::HelloAck(ack) => {
             println!("✓ {}", ack.public_url);
             println!("  → http://127.0.0.1:{local_port}");
             tracing::info!(url = %ack.public_url, "隧道已建立");
+            ack
         }
         Frame::Error(err) => {
             anyhow::bail!("服务器拒绝连接：{:?} {}", err.code, err.message);
         }
         other => anyhow::bail!("意外的应答帧：{:?}", other.frame_type()),
-    }
+    };
 
-    let local = format!("127.0.0.1:{local_port}");
+    Ok(ExposeSession {
+        ack,
+        _mux: mux,
+        inbound,
+        join,
+        local_port,
+    })
+}
 
-    while let Some(stream) = inbound.recv().await {
-        let local = local.clone();
-        tokio::spawn(async move {
-            if let Err(e) = serve_stream(stream, local).await {
-                tracing::debug!(error = %e, "单条隧道流结束");
-            }
-        });
-    }
-
-    let _ = join.await;
-    anyhow::bail!("与服务器的连接已断开")
+/// 连接服务器并把本地端口暴露出去。函数在会话期间一直不返回。
+pub async fn run(
+    server: &str,
+    token: &str,
+    local_port: u16,
+    want_subdomain: Option<String>,
+) -> anyhow::Result<()> {
+    connect(server, token, local_port, want_subdomain)
+        .await?
+        .serve()
+        .await
 }
 
 async fn serve_stream(stream: Stream, local: String) -> anyhow::Result<()> {

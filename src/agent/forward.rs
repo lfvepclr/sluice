@@ -37,7 +37,8 @@ pub struct ForwardMeta {
     pub client_ip: String,
 }
 
-enum Egress {
+/// 出口位置：请求经服务器出网或本机直连。
+pub enum Egress {
     Local,
     Server { mux: MuxHandle },
 }
@@ -66,8 +67,7 @@ pub async fn run(
             let token = token
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("出口设为 server 时必须提供 token"))?;
-            let mux = connect(&server, &token).await?;
-            Egress::Server { mux }
+            connect_egress(&server, &token).await?
         }
     };
 
@@ -79,9 +79,15 @@ pub async fn run(
     // 回环监听不需要请求级鉴权：token 只用于和服务器握手。
     // 一旦监听非回环地址，必须要求调用方带 token，否则就是开放代理。
     let client_token = if loopback { None } else { token.clone() };
-    let token = Arc::new(client_token);
-    let egress = Arc::new(egress);
+    serve_listener(listener, Arc::new(client_token), Arc::new(egress)).await
+}
 
+/// 使用已绑定的监听器服务（便于测试与 benchmark 用 `:0` 端口）。
+pub async fn serve_listener(
+    listener: TcpListener,
+    token: Arc<Option<String>>,
+    egress: Arc<Egress>,
+) -> anyhow::Result<()> {
     loop {
         let (socket, peer) = listener.accept().await?;
         let _ = socket.set_nodelay(true);
@@ -122,7 +128,8 @@ fn is_loopback(bind: &str) -> bool {
         .unwrap_or(false)
 }
 
-async fn connect(server: &str, token: &str) -> anyhow::Result<MuxHandle> {
+/// 连接服务器并握手 forward 会话，返回服务器出口。
+pub async fn connect_egress(server: &str, token: &str) -> anyhow::Result<Egress> {
     let expected_pin = std::env::var("SLUICE_SPKI_SHA256").ok();
     let (socket, pin) = crate::agent::tls::connect(server, expected_pin.as_deref()).await?;
     if expected_pin.is_none() {
@@ -140,7 +147,7 @@ async fn connect(server: &str, token: &str) -> anyhow::Result<MuxHandle> {
     .await?;
 
     match proto::read_frame(&mut control, MAX_FRAME_LEN).await? {
-        Frame::HelloAck(_) => Ok(mux),
+        Frame::HelloAck(_) => Ok(Egress::Server { mux }),
         Frame::Error(err) => anyhow::bail!("服务器拒绝：{:?} {}", err.code, err.message),
         other => anyhow::bail!("意外应答：{:?}", other.frame_type()),
     }
