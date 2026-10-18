@@ -14,8 +14,8 @@ use yamux::Mode;
 #[tokio::test]
 async fn server_side_can_open_stream_towards_agent() {
     let (a, b) = tokio::io::duplex(128 * 1024);
-    let (_agent, _agent_in) = transport::spawn(a, Mode::Client, transport::default_config());
-    let (server, mut server_in) = transport::spawn(b, Mode::Server, transport::default_config());
+    let (_agent, _agent_in, _aj) = transport::spawn(a, Mode::Client, transport::default_config());
+    let (server, mut server_in, _sj) = transport::spawn(b, Mode::Server, transport::default_config());
 
     // forward 模式依赖这个方向：agent 发起，服务器侧收流
     let mut stream = transport::into_tokio(server.open().await.expect("服务器应能开流"));
@@ -30,8 +30,8 @@ async fn server_side_can_open_stream_towards_agent() {
 #[tokio::test]
 async fn agent_side_can_open_stream_towards_server() {
     let (a, b) = tokio::io::duplex(128 * 1024);
-    let (agent, mut agent_in) = transport::spawn(a, Mode::Client, transport::default_config());
-    let (_server, _server_in) = transport::spawn(b, Mode::Server, transport::default_config());
+    let (agent, mut agent_in, _aj) = transport::spawn(a, Mode::Client, transport::default_config());
+    let (_server, _server_in, _sj) = transport::spawn(b, Mode::Server, transport::default_config());
 
     let mut stream = transport::into_tokio(agent.open().await.expect("agent 应能开流"));
     stream.write_all(b"hello").await.unwrap();
@@ -44,8 +44,8 @@ async fn agent_side_can_open_stream_towards_server() {
 #[tokio::test]
 async fn stream_payload_roundtrip() {
     let (a, b) = tokio::io::duplex(128 * 1024);
-    let (agent, _agent_in) = transport::spawn(a, Mode::Client, transport::default_config());
-    let (_server, mut server_in) = transport::spawn(b, Mode::Server, transport::default_config());
+    let (agent, _agent_in, _aj) = transport::spawn(a, Mode::Client, transport::default_config());
+    let (_server, mut server_in, _sj) = transport::spawn(b, Mode::Server, transport::default_config());
 
     let mut out = transport::into_tokio(agent.open().await.unwrap());
     out.write_all(b"payload").await.unwrap();

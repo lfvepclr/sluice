@@ -43,7 +43,7 @@ enum Command {
         token: Option<String>,
 
         /// 指定子域名（省略则随机生成）
-        #[arg(short, long)]
+        #[arg(long)]
         subdomain: Option<String>,
     },
 
@@ -149,16 +149,22 @@ fn run_server(path: &Path) -> anyhow::Result<()> {
     println!("  访问模板   {}/", cfg.public_url_template());
     println!("  token      {}", cfg.token_hint());
 
-    anyhow::bail!("服务器尚未实现（M4 起逐步落地），当前仅完成配置校验")
+    runtime()?.block_on(sluice::server::run(cfg))
 }
 
 fn run_expose(
-    _port: u16,
-    _server: Option<String>,
-    _token: Option<String>,
-    _subdomain: Option<String>,
+    port: u16,
+    server: Option<String>,
+    token: Option<String>,
+    subdomain: Option<String>,
 ) -> anyhow::Result<()> {
-    anyhow::bail!("隧道模式尚未实现（M4）")
+    let (server, token) = resolve_client(server, token)?;
+    runtime()?.block_on(sluice::agent::expose::run(
+        &server,
+        &token,
+        port,
+        subdomain,
+    ))
 }
 
 fn run_forward(
@@ -168,7 +174,6 @@ fn run_forward(
     _token: Option<String>,
     _egress: Option<&str>,
 ) -> anyhow::Result<()> {
-    let _ = ClientConfig::load_default();
     anyhow::bail!("转发模式尚未实现（M7）")
 }
 
@@ -178,4 +183,31 @@ fn run_doctor(_path: &Path) -> anyhow::Result<()> {
 
 fn run_bench(_out: &Path) -> anyhow::Result<()> {
     anyhow::bail!("bench 尚未实现（M9）")
+}
+
+/// 单核服务器：固定一个 worker，避免线程切换开销。
+fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
+    Ok(tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()?)
+}
+
+/// 解析客户端连接参数：命令行 > 环境变量 > 配置文件。
+fn resolve_client(
+    server: Option<String>,
+    token: Option<String>,
+) -> anyhow::Result<(String, String)> {
+    let mut cfg = ClientConfig::load_default();
+    cfg.apply_env_overrides();
+
+    let server = server.or(cfg.server).ok_or_else(|| {
+        anyhow::anyhow!("缺少服务器地址：用 --server host:7835 指定，或设置 SLUICE_SERVER")
+    })?;
+
+    let token = token.or(cfg.token).ok_or_else(|| {
+        anyhow::anyhow!("缺少 token：用 --token 指定，或设置 SLUICE_TOKEN")
+    })?;
+
+    Ok((server, token))
 }

@@ -64,7 +64,15 @@ enum Event {
 ///
 /// 入站流用无界通道：流句柄本身很小，真正的背压由 yamux 的流控负责，
 /// 在这里加缓冲反而会让驱动循环被阻塞、连 ACK 都发不出去。
-pub fn spawn<T>(io: T, mode: Mode, cfg: Config) -> (MuxHandle, mpsc::UnboundedReceiver<Stream>)
+pub fn spawn<T>(
+    io: T,
+    mode: Mode,
+    cfg: Config,
+) -> (
+    MuxHandle,
+    mpsc::UnboundedReceiver<Stream>,
+    tokio::task::JoinHandle<()>,
+)
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -72,9 +80,9 @@ where
     let (open_tx, open_rx) = mpsc::channel(64);
     let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
 
-    tokio::spawn(driver(conn, open_rx, inbound_tx));
+    let join = tokio::spawn(driver(conn, open_rx, inbound_tx));
 
-    (MuxHandle { open_tx }, inbound_rx)
+    (MuxHandle { open_tx }, inbound_rx, join)
 }
 
 async fn driver<T>(
@@ -155,8 +163,8 @@ mod tests {
         mpsc::UnboundedReceiver<Stream>,
     ) {
         let (a, b) = tokio::io::duplex(256 * 1024);
-        let (client, client_in) = spawn(a, Mode::Client, default_config());
-        let (server, server_in) = spawn(b, Mode::Server, default_config());
+        let (client, client_in, _cj) = spawn(a, Mode::Client, default_config());
+        let (server, server_in, _sj) = spawn(b, Mode::Server, default_config());
         (client, client_in, server, server_in)
     }
 

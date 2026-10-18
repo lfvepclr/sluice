@@ -52,7 +52,12 @@ L5 基础层  infra       config、logging、tls/acme、error、net
 
 用 HTTP/1.1 over stream 而不是自定义二进制，是因为 hyper 已经处理好 chunked、trailer、流式 body 和 upgrade；自己写等于重造轮子且必在 SSE 上出错。
 
-**开流方向**：expose 由 server 开流，forward 由 agent 开流。yamux 对称，两侧都要注册入站流处理。
+**开流方向**：expose 由 server 开流，forward 由 agent 开流。
+
+实现细节：yamux 0.12/0.13 没有独立的 `Control` 句柄，开流与收流必须由同一个
+持有 `Connection` 的循环来 poll。`src/transport.rs` 用「单任务三事件」的
+`poll_fn` 把 `poll_next_inbound` / `poll_new_outbound` / 开流命令通道合在一起，
+先 poll 入站以保证 ACK 及时处理。双向开流已由 `tests/spike_yamux.rs` 验证。
 
 ### 3.3 状态机
 
@@ -94,7 +99,7 @@ accept(127.0.0.1:1234) → parse_target(path)
 | 决策 | 选择 | 理由 |
 | --- | --- | --- |
 | 传输 | TCP + TLS 1.3（rustls/ring） | UDP 在部分网络被限速；TLS 自带加密 |
-| 复用 | yamux | 对称开流，比「每连接一条 TCP」省握手，比 QUIC 简单 |
+| 复用 | yamux + 单任务驱动 | 双向开流已验证；比「每连接一条 TCP」省握手，比 QUIC 简单 |
 | 控制端口 | 7835 独立 | 443 被既有服务占用，先解耦 |
 | 服务器认证 | Hello 帧内 bearer token + 常数时间比较 | TLS 已保证机密性 |
 | 服务器证书校验 | SPKI 指纹 TOFU | 控制面走 IP/自签，域名校验不适用 |
