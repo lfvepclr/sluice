@@ -203,7 +203,7 @@ struct Bench {
 }
 
 const SMALL_BODY: [u8; 1024] = [0x61; 1024];
-const BIG_BODY: [u8; 1024 * 1024] = [0x62; 1024 * 1024];
+static BIG_BODY: [u8; 1024 * 1024] = [0x62; 1024 * 1024];
 
 /// 静态目标：按路径返回固定内容（`/1k`、`/1m`）。
 async fn serve_static(listener: TcpListener) {
