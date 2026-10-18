@@ -3,6 +3,7 @@
 //! M4 阶段只做明文 HTTP 入口；8443 的 TLS 入口与 ACME 在 M6 接入，届时只需
 //! 把 `serve` 的 IO 换成 TLS 流，路由逻辑完全复用。
 
+pub mod acme;
 pub mod certgen;
 pub mod control;
 pub mod forward;
@@ -34,16 +35,21 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
     println!("sluice {} 服务器启动", crate::VERSION);
     println!("  访问模板   http://{template}/");
 
-    let cert_store = build_cert_store(&app.cfg)?;
+    let (cert_store, acme_bootstrap) = build_cert_store(&app.cfg)?;
 
     let control_app = app.clone();
     let ingress_app = app.clone();
     let https_app = app.clone();
-    let https_acceptor = match (&app.cfg.listen.https, &cert_store) {
-        (Some(_), Some(store)) => Some(tls::acceptor(store.clone())?),
-        _ => None,
+    let https_acceptor = match &app.cfg.listen.https {
+        Some(_) => Some(tls::acceptor(cert_store.clone())?),
+        None => None,
     };
     let https_addr = app.cfg.listen.https;
+
+    // ACME 后台任务要在进入事件循环之前启动，否则监听不退出就永远轮不到它
+    if app.cfg.tls.mode == crate::config::TlsMode::Acme {
+        acme::spawn(app.cfg.clone(), cert_store.clone(), acme_bootstrap);
+    }
 
     let mut tasks = tokio::task::JoinSet::new();
     // 控制面用独立的长效自签证书：入口证书走 ACME 续期时会换 SPKI，
@@ -82,39 +88,36 @@ pub async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
 }
 
 /// 按 `tls.mode` 准备证书。
-fn build_cert_store(cfg: &ServerConfig) -> anyhow::Result<Option<Arc<tls::CertStore>>> {
+fn build_cert_store(cfg: &ServerConfig) -> anyhow::Result<(Arc<tls::CertStore>, bool)> {
     use crate::config::TlsMode;
 
     let wildcard = format!("*.{}", cfg.base_domain);
 
-    let store = match cfg.tls.mode {
+    match cfg.tls.mode {
         TlsMode::SelfSigned => {
             tracing::warn!("使用自签证书：浏览器会提示不安全，仅适合本地联调");
-            tls::CertStore::self_signed(
+            let store = tls::CertStore::self_signed(
                 &[cfg.base_domain.as_str(), wildcard.as_str(), "localhost"],
                 365,
-            )?
+            )?;
+            Ok((store, false))
         }
         TlsMode::Files => {
             let (cert, key) = tls::load_files(&cfg.tls.cert_dir)?;
-            tls::CertStore::from_der(cert, key)?
+            Ok((tls::CertStore::from_der(cert, key)?, false))
         }
         TlsMode::Acme => {
-            // ACME 尚未接入：优先复用已有证书，没有就退回自签并明确告警
-            match tls::load_files(&cfg.tls.cert_dir) {
-                Ok((cert, key)) => tls::CertStore::from_der(cert, key)?,
-                Err(_) => {
-                    tracing::warn!(
-                        "tls.mode = acme 但未找到可用证书，暂用自签证书；ACME 自动签发尚未实现"
-                    );
-                    tls::CertStore::self_signed(
-                        &[cfg.base_domain.as_str(), wildcard.as_str(), "localhost"],
-                        7,
-                    )?
-                }
+            // 有缓存证书就直接用，后台再按剩余天数决定是否续期
+            if let Ok((cert, key)) = tls::load_files(&cfg.tls.cert_dir) {
+                return Ok((tls::CertStore::from_der(cert, key)?, false));
             }
+            // 没有证书：先用 7 天自签顶住，后台立即签发并热替换
+            tracing::warn!("尚无证书，先用临时自签证书，后台正在向 Let's Encrypt 申请");
+            let store = tls::CertStore::self_signed(
+                &[cfg.base_domain.as_str(), wildcard.as_str(), "localhost"],
+                7,
+            )?;
+            Ok((store, true))
         }
-    };
-
-    Ok(Some(store))
+    }
 }

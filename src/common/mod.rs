@@ -5,6 +5,7 @@
 pub mod body;
 pub mod crypto;
 pub mod headers;
+pub mod http_client;
 pub mod ssrf;
 pub mod subdomain;
 pub mod upgrade;

@@ -54,7 +54,7 @@ pub async fn fetch(
     }
 }
 
-async fn tls_connect(
+pub(crate) async fn tls_connect(
     tcp: TcpStream,
     host: &str,
 ) -> anyhow::Result<tokio_rustls::client::TlsStream<TcpStream>> {

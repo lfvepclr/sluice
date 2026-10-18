@@ -48,6 +48,15 @@ impl CertStore {
         let generated = certgen::self_signed(domains, days)?;
         Self::from_der(generated.cert_der, generated.key_der)
     }
+
+    /// 当前叶子证书的剩余有效天数。解析失败按 -1 处理由调用方决定是否重签。
+    pub fn days_left(&self) -> Result<i64> {
+        let current = self.current.load();
+        let leaf = current
+            .end_entity_cert()
+            .map_err(|_| anyhow::anyhow!("证书链为空"))?;
+        super::acme::days_left(leaf.as_ref())
+    }
 }
 
 impl ResolvesServerCert for CertStore {
