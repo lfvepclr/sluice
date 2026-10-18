@@ -106,7 +106,9 @@ async fn driver<T>(
             // 2. 有待处理的开流请求就推进它
             if let Some(reply) = pending.take() {
                 match conn.poll_new_outbound(cx) {
-                    Poll::Ready(Ok(stream)) => return Poll::Ready(Event::Opened(Ok(stream), reply)),
+                    Poll::Ready(Ok(stream)) => {
+                        return Poll::Ready(Event::Opened(Ok(stream), reply));
+                    }
                     Poll::Ready(Err(e)) => return Poll::Ready(Event::Opened(Err(e), reply)),
                     Poll::Pending => pending = Some(reply),
                 }
@@ -143,6 +145,22 @@ async fn driver<T>(
     while let Ok(reply) = cmd_rx.try_recv() {
         let _ = reply.send(Err(ConnectionError::Closed));
     }
+}
+
+/// 双向字节桥接。
+///
+/// `hyper::upgrade::Upgraded` 只实现 hyper 的 Read/Write，必须先包一层
+/// `TokioIo` 才能喂给 `copy_bidirectional`。
+pub fn bridge(
+    a: hyper::upgrade::Upgraded,
+    b: hyper::upgrade::Upgraded,
+) -> tokio::task::JoinHandle<std::io::Result<(u64, u64)>> {
+    tokio::spawn(async move {
+        // Upgraded 只实现 hyper 的 Read/Write，TokioIo 负责转成 tokio trait
+        let mut a = hyper_util::rt::TokioIo::new(a);
+        let mut b = hyper_util::rt::TokioIo::new(b);
+        tokio::io::copy_bidirectional(&mut a, &mut b).await
+    })
 }
 
 /// 把 yamux 流转换成 tokio 的 IO，供 hyper 使用。

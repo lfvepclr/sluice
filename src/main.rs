@@ -159,12 +159,7 @@ fn run_expose(
     subdomain: Option<String>,
 ) -> anyhow::Result<()> {
     let (server, token) = resolve_client(server, token)?;
-    runtime()?.block_on(sluice::agent::expose::run(
-        &server,
-        &token,
-        port,
-        subdomain,
-    ))
+    runtime()?.block_on(sluice::agent::expose::run(&server, &token, port, subdomain))
 }
 
 fn run_forward(
@@ -224,9 +219,9 @@ fn resolve_client(
         anyhow::anyhow!("缺少服务器地址：用 --server host:7835 指定，或设置 SLUICE_SERVER")
     })?;
 
-    let token = token.or(cfg.token).ok_or_else(|| {
-        anyhow::anyhow!("缺少 token：用 --token 指定，或设置 SLUICE_TOKEN")
-    })?;
+    let token = token
+        .or(cfg.token)
+        .ok_or_else(|| anyhow::anyhow!("缺少 token：用 --token 指定，或设置 SLUICE_TOKEN"))?;
 
     Ok((server, token))
 }

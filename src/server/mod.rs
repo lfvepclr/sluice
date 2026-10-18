@@ -3,6 +3,7 @@
 //! M4 阶段只做明文 HTTP 入口；8443 的 TLS 入口与 ACME 在 M6 接入，届时只需
 //! 把 `serve` 的 IO 换成 TLS 流，路由逻辑完全复用。
 
+pub mod certgen;
 pub mod control;
 pub mod forward;
 pub mod ingress;

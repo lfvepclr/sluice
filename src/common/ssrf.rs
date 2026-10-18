@@ -102,7 +102,12 @@ mod tests {
 
     #[test]
     fn multicast_and_reserved_are_forbidden() {
-        for s in ["224.0.0.1", "239.255.255.250", "240.0.0.1", "255.255.255.255"] {
+        for s in [
+            "224.0.0.1",
+            "239.255.255.250",
+            "240.0.0.1",
+            "255.255.255.255",
+        ] {
             assert!(is_forbidden_ip(ip(s)), "{s} 应被拒绝");
         }
     }

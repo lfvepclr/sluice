@@ -18,6 +18,7 @@ use super::tunnel::KIND_FORWARD;
 use crate::agent::forward::ForwardMeta;
 use crate::common::body::{BoxedBody, text};
 use crate::common::ssrf;
+use crate::common::upgrade;
 use crate::common::upstream;
 use crate::common::urlpath::{self, Target};
 use crate::transport;
@@ -69,7 +70,7 @@ async fn handle_stream(stream: Stream, app: Arc<App>) -> anyhow::Result<()> {
 
 async fn handle(
     app: Arc<App>,
-    req: Request<hyper::body::Incoming>,
+    mut req: Request<hyper::body::Incoming>,
     path: String,
     client_ip: String,
 ) -> Response<BoxedBody> {
@@ -88,10 +89,15 @@ async fn handle(
 
     tracing::info!(client = %client_ip, target = %target.url(), "转发请求");
 
-    match upstream::fetch(&target, req, pinned).await {
+    let client_upgrade = upgrade::take_client(&mut req);
+
+    let mut response = match upstream::fetch(&target, req, pinned).await {
         Ok(response) => response,
-        Err(e) => text(StatusCode::BAD_GATEWAY, format!("上游请求失败：{e}")),
-    }
+        Err(e) => return text(StatusCode::BAD_GATEWAY, format!("上游请求失败：{e}")),
+    };
+
+    upgrade::bridge_if_upgraded(client_upgrade, &mut response);
+    response
 }
 
 /// 白名单与网段校验。返回需要固定的 IP（防 DNS rebinding）。

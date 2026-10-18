@@ -5,7 +5,7 @@
 
 use std::net::IpAddr;
 
-use http::header::{HeaderMap, HeaderName, HeaderValue, CONNECTION};
+use http::header::{CONNECTION, HeaderMap, HeaderName, HeaderValue};
 
 /// 固定要剥掉的 hop-by-hop 头（RFC 7230 §6.1）。
 const HOP_BY_HOP: [&str; 8] = [
@@ -41,6 +41,39 @@ pub fn strip_hop_by_hop(headers: &mut HeaderMap) {
     for token in listed {
         if let Ok(name) = HeaderName::from_bytes(token.as_bytes()) {
             headers.remove(&name);
+        }
+    }
+}
+
+/// 是否是一次协议升级请求（WebSocket 等）。
+pub fn wants_upgrade(headers: &HeaderMap) -> bool {
+    let connection_says_upgrade = headers
+        .get(CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            v.split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+        })
+        .unwrap_or(false);
+
+    connection_says_upgrade && headers.contains_key("upgrade")
+}
+
+/// 剥离 hop-by-hop 头，但保留升级语义。
+///
+/// 升级请求必须把 `Connection: upgrade` 与 `Upgrade: websocket` 原样带到下一跳，
+/// 否则本地服务看不到升级意图，握手永远失败。
+pub fn strip_hop_by_hop_preserving_upgrade(headers: &mut HeaderMap) {
+    let upgrade_requested = wants_upgrade(headers);
+    // Upgrade 头本身也在剥离列表里，先留存再恢复，否则对端看不到协议名
+    let upgrade_value = headers.get(http::header::UPGRADE).cloned();
+
+    strip_hop_by_hop(headers);
+
+    if upgrade_requested {
+        headers.insert(CONNECTION, HeaderValue::from_static("upgrade"));
+        if let Some(value) = upgrade_value {
+            headers.insert(http::header::UPGRADE, value);
         }
     }
 }

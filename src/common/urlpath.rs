@@ -124,9 +124,7 @@ pub fn parse_target(input: &str) -> Result<Target, PathError> {
     let after = after.strip_prefix('/').unwrap_or(after);
     let after = after.strip_prefix('/').unwrap_or(after);
 
-    let split_at = after
-        .find(['/', '?'])
-        .unwrap_or(after.len());
+    let split_at = after.find(['/', '?']).unwrap_or(after.len());
     let host_part = &after[..split_at];
     let tail = &after[split_at..];
 

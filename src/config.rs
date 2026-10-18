@@ -480,9 +480,8 @@ impl ClientConfig {
 
     /// 写回磁盘（首次输入 token 后缓存）。
     pub fn save(&self) -> std::io::Result<PathBuf> {
-        let dir = Self::default_dir().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "无法确定配置目录")
-        })?;
+        let dir = Self::default_dir()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "无法确定配置目录"))?;
         std::fs::create_dir_all(&dir)?;
         let path = dir.join("config.toml");
         let text = toml::to_string_pretty(self)
@@ -520,7 +519,10 @@ mod tests {
     fn defaults_are_sane() {
         let cfg = base();
         assert_eq!(cfg.listen.http.to_string(), DEFAULT_HTTP);
-        assert_eq!(cfg.listen.https.map(|a| a.to_string()).as_deref(), Some(DEFAULT_HTTPS));
+        assert_eq!(
+            cfg.listen.https.map(|a| a.to_string()).as_deref(),
+            Some(DEFAULT_HTTPS)
+        );
         assert_eq!(cfg.listen.control.to_string(), DEFAULT_CONTROL);
         assert_eq!(cfg.limits.reserved_secs, 60);
         assert!(!cfg.forward.allow_private);

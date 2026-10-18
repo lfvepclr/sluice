@@ -12,9 +12,39 @@ pub const LEN: usize = 6;
 
 /// 保留词：这些名字要么有协议语义，要么容易被误认为官方入口。
 const RESERVED: &[&str] = &[
-    "www", "api", "admin", "root", "mail", "smtp", "imap", "pop", "mx", "ns", "ns1", "ns2", "ftp",
-    "cdn", "static", "assets", "status", "health", "metrics", "grafana", "adminer", "test", "dev",
-    "staging", "demo", "docs", "blog", "app", "dashboard", "console", "panel", "acme", "sluice",
+    "www",
+    "api",
+    "admin",
+    "root",
+    "mail",
+    "smtp",
+    "imap",
+    "pop",
+    "mx",
+    "ns",
+    "ns1",
+    "ns2",
+    "ftp",
+    "cdn",
+    "static",
+    "assets",
+    "status",
+    "health",
+    "metrics",
+    "grafana",
+    "adminer",
+    "test",
+    "dev",
+    "staging",
+    "demo",
+    "docs",
+    "blog",
+    "app",
+    "dashboard",
+    "console",
+    "panel",
+    "acme",
+    "sluice",
 ];
 
 /// 生成一个随机子域名。
@@ -104,13 +134,13 @@ mod tests {
     #[test]
     fn rejects_bad_shapes() {
         for name in [
-            "ab",              // 太短
-            "-abc",            // 首字符是连字符
-            "abc-",            // 尾字符是连字符
-            "a--b",            // 连续连字符
-            "abc_def",         // 下划线
-            "ABC",             // 大写
-            "abc.def",         // 点
+            "ab",                                // 太短
+            "-abc",                              // 首字符是连字符
+            "abc-",                              // 尾字符是连字符
+            "a--b",                              // 连续连字符
+            "abc_def",                           // 下划线
+            "ABC",                               // 大写
+            "abc.def",                           // 点
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // 太长
         ] {
             assert!(!validate(name), "`{name}` 应被拒绝");

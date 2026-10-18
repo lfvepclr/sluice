@@ -12,6 +12,7 @@ use tokio::net::TcpListener;
 
 use super::{App, tunnel};
 use crate::common::body::{BoxedBody, text};
+use crate::common::upgrade;
 
 /// 健康检查路径，用于外部探测与 benchmark 基线。
 pub const HEALTH_PATH: &str = "/__sluice/health";
@@ -43,7 +44,11 @@ pub async fn serve(app: Arc<App>, addr: SocketAddr) -> anyhow::Result<()> {
     }
 }
 
-async fn handle(app: Arc<App>, req: Request<Incoming>, peer: SocketAddr) -> Response<BoxedBody> {
+async fn handle(
+    app: Arc<App>,
+    mut req: Request<Incoming>,
+    peer: SocketAddr,
+) -> Response<BoxedBody> {
     if req.uri().path() == HEALTH_PATH {
         return text(StatusCode::OK, "ok");
     }
@@ -64,7 +69,9 @@ async fn handle(app: Arc<App>, req: Request<Incoming>, peer: SocketAddr) -> Resp
     let Some(session) = app.registry.get(subdomain) else {
         return text(
             StatusCode::NOT_FOUND,
-            format!("子域名 `{subdomain}` 未分配。确认 agent 已启动，且 base_domain 与客户端一致。"),
+            format!(
+                "子域名 `{subdomain}` 未分配。确认 agent 已启动，且 base_domain 与客户端一致。"
+            ),
         );
     };
 
@@ -75,11 +82,16 @@ async fn handle(app: Arc<App>, req: Request<Incoming>, peer: SocketAddr) -> Resp
         );
     }
 
-    match tunnel::proxy(&session, req, peer, "http").await {
+    let client_upgrade = upgrade::take_client(&mut req);
+
+    let mut response = match tunnel::proxy(&session, req, peer, "http").await {
         Ok(response) => response,
         Err(e) => {
             tracing::warn!(%subdomain, error = %e, "隧道转发失败");
-            text(StatusCode::BAD_GATEWAY, "Tunnel offline：会话已断开")
+            return text(StatusCode::BAD_GATEWAY, "Tunnel offline：会话已断开");
         }
-    }
+    };
+
+    upgrade::bridge_if_upgraded(client_upgrade, &mut response);
+    response
 }

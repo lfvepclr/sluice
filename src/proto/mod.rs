@@ -258,8 +258,14 @@ mod tests {
     fn ping_pong_have_empty_payload() {
         let ping = encode(&Frame::Ping);
         assert_eq!(ping.len(), HEADER_LEN + 2);
-        assert!(matches!(decode(FrameType::Ping, b"{}").unwrap(), Frame::Ping));
-        assert!(matches!(decode(FrameType::Pong, b"{}").unwrap(), Frame::Pong));
+        assert!(matches!(
+            decode(FrameType::Ping, b"{}").unwrap(),
+            Frame::Ping
+        ));
+        assert!(matches!(
+            decode(FrameType::Pong, b"{}").unwrap(),
+            Frame::Pong
+        ));
     }
 
     #[test]
@@ -317,7 +323,9 @@ mod tests {
     #[tokio::test]
     async fn write_then_read() {
         let (mut a, mut b) = tokio::io::duplex(1024);
-        write_frame(&mut a, &Frame::Hello(sample_hello())).await.unwrap();
+        write_frame(&mut a, &Frame::Hello(sample_hello()))
+            .await
+            .unwrap();
         let frame = read_frame(&mut b, MAX_FRAME_LEN).await.unwrap();
         assert!(matches!(frame, Frame::Hello(_)));
     }

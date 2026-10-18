@@ -45,7 +45,7 @@ pub async fn proxy(
         .unwrap_or_default()
         .to_string();
 
-    headers::strip_hop_by_hop(&mut out_headers);
+    headers::strip_hop_by_hop_preserving_upgrade(&mut out_headers);
     headers::append_forwarded_for(&mut out_headers, peer.ip());
     headers::set_forwarded_proto(&mut out_headers, scheme);
     if !original_host.is_empty() {
@@ -59,9 +59,7 @@ pub async fn proxy(
         .unwrap_or_else(|| "/".to_string());
 
     let mut builder = Request::builder().method(parts.method).uri(path);
-    *builder
-        .headers_mut()
-        .expect("builder 在 body 之前总是可写") = out_headers;
+    *builder.headers_mut().expect("builder 在 body 之前总是可写") = out_headers;
 
     let outbound = builder.body(body.map_err(|e| -> BoxError { Box::new(e) }).boxed())?;
 

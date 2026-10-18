@@ -4,7 +4,7 @@
 //! 交叉编译的简单性。这里直接用 hyper + tokio-rustls + webpki-roots，
 //! 与隧道侧复用同一套 HTTP 栈。
 
-use std::sync::{Arc, Once};
+use std::sync::Arc;
 use std::time::Duration;
 
 use http::{Request, Response, header::HOST};
@@ -21,10 +21,7 @@ use super::urlpath::{Scheme, Target};
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn install_provider() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    });
+    super::crypto::install();
 }
 
 /// 按目标发起请求，返回上游响应（body 保持流式）。
@@ -77,7 +74,11 @@ async fn tls_connect(
     Ok(connector.connect(server_name, tcp).await?)
 }
 
-async fn send<T>(io: T, target: &Target, req: Request<Incoming>) -> anyhow::Result<Response<BoxedBody>>
+async fn send<T>(
+    io: T,
+    target: &Target,
+    req: Request<Incoming>,
+) -> anyhow::Result<Response<BoxedBody>>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -97,9 +98,7 @@ where
     let mut builder = Request::builder()
         .method(parts.method)
         .uri(target.path_and_query.clone());
-    *builder
-        .headers_mut()
-        .expect("builder 在 body 之前总是可写") = headers;
+    *builder.headers_mut().expect("builder 在 body 之前总是可写") = headers;
 
     let outbound = builder.body(body.map_err(|e| -> BoxError { Box::new(e) }).boxed())?;
     let response = sender.send_request(outbound).await?;

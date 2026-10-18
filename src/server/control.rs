@@ -12,9 +12,7 @@ use yamux::Mode;
 
 use super::App;
 use crate::common::subdomain;
-use crate::proto::{
-    self, ErrorCode, ErrorFrame, Frame, HelloAck, MAX_FRAME_LEN, PROTOCOL_VERSION,
-};
+use crate::proto::{self, ErrorCode, ErrorFrame, Frame, HelloAck, MAX_FRAME_LEN, PROTOCOL_VERSION};
 use crate::transport::{self, MuxHandle};
 
 /// 心跳间隔与超时（M4 先由 TCP 断连检测，心跳在 M6 与 TLS 一起接）。
@@ -113,10 +111,15 @@ pub async fn serve(app: Arc<App>, addr: SocketAddr) -> anyhow::Result<()> {
     }
 }
 
-async fn handle_connection(app: Arc<App>, socket: TcpStream, peer: SocketAddr) -> anyhow::Result<()> {
+async fn handle_connection(
+    app: Arc<App>,
+    socket: TcpStream,
+    peer: SocketAddr,
+) -> anyhow::Result<()> {
     let _ = socket.set_nodelay(true);
 
-    let (mux, mut inbound, join) = transport::spawn(socket, Mode::Server, transport::default_config());
+    let (mux, mut inbound, join) =
+        transport::spawn(socket, Mode::Server, transport::default_config());
 
     // 第一条入站流固定是控制流
     let Some(control_stream) = inbound.recv().await else {
@@ -230,7 +233,11 @@ fn token_matches(expected: &str, provided: &str) -> bool {
     expected.as_bytes().ct_eq(provided.as_bytes()).into()
 }
 
-async fn reject(control: &mut (impl tokio::io::AsyncWrite + Unpin), code: ErrorCode, message: &str) {
+async fn reject(
+    control: &mut (impl tokio::io::AsyncWrite + Unpin),
+    code: ErrorCode,
+    message: &str,
+) {
     let frame = Frame::Error(ErrorFrame {
         code,
         message: message.to_string(),
@@ -284,7 +291,10 @@ mod tests {
     #[test]
     fn allocate_rejects_reserved_custom_name() {
         let reg = Registry::new();
-        assert_eq!(allocate(&reg, Some("api")), Err(ErrorCode::SubdomainReserved));
+        assert_eq!(
+            allocate(&reg, Some("api")),
+            Err(ErrorCode::SubdomainReserved)
+        );
     }
 
     #[test]

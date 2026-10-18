@@ -20,6 +20,7 @@ use yamux::{Mode as YamuxMode, Stream};
 
 use crate::common::body::{BoxError, BoxedBody, text};
 use crate::common::headers;
+use crate::common::upgrade;
 use crate::common::upstream;
 use crate::common::urlpath::{self, Target};
 use crate::config::EgressMode;
@@ -60,9 +61,8 @@ pub async fn run(
     let egress = match egress {
         EgressMode::Local => Egress::Local,
         EgressMode::Server => {
-            let server = server.ok_or_else(|| {
-                anyhow::anyhow!("出口设为 server 时必须指定 --server host:7835")
-            })?;
+            let server = server
+                .ok_or_else(|| anyhow::anyhow!("出口设为 server 时必须指定 --server host:7835"))?;
             let token = token
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("出口设为 server 时必须提供 token"))?;
@@ -117,17 +117,24 @@ fn is_loopback(bind: &str) -> bool {
     if bind == "localhost" {
         return true;
     }
-    IpAddr::from_str(bind).map(|ip| ip.is_loopback()).unwrap_or(false)
+    IpAddr::from_str(bind)
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
 }
 
 async fn connect(server: &str, token: &str) -> anyhow::Result<MuxHandle> {
     let socket = TcpStream::connect(server).await?;
     let _ = socket.set_nodelay(true);
 
-    let (mux, _inbound, _join) = transport::spawn(socket, YamuxMode::Client, transport::default_config());
+    let (mux, _inbound, _join) =
+        transport::spawn(socket, YamuxMode::Client, transport::default_config());
 
     let mut control = transport::into_tokio(mux.open().await?);
-    proto::write_frame(&mut control, &Frame::Hello(Hello::new(token, Mode::Forward))).await?;
+    proto::write_frame(
+        &mut control,
+        &Frame::Hello(Hello::new(token, Mode::Forward)),
+    )
+    .await?;
 
     match proto::read_frame(&mut control, MAX_FRAME_LEN).await? {
         Frame::HelloAck(_) => Ok(mux),
@@ -137,7 +144,7 @@ async fn connect(server: &str, token: &str) -> anyhow::Result<MuxHandle> {
 }
 
 async fn handle(
-    req: Request<Incoming>,
+    mut req: Request<Incoming>,
     peer: SocketAddr,
     token: Arc<Option<String>>,
     egress: Arc<Egress>,
@@ -164,14 +171,14 @@ async fn handle(
         }
     };
 
+    let client_upgrade = upgrade::take_client(&mut req);
+
     let (parts, body) = req.into_parts();
     let mut out_headers = parts.headers;
     headers::strip_hop_by_hop(&mut out_headers);
     let rebuilt = {
         let mut builder = Request::builder().method(parts.method).uri(path.clone());
-        *builder
-            .headers_mut()
-            .expect("builder 在 body 之前总是可写") = out_headers;
+        *builder.headers_mut().expect("builder 在 body 之前总是可写") = out_headers;
         match builder.body(body) {
             Ok(r) => r,
             Err(e) => return text(StatusCode::BAD_REQUEST, format!("请求构造失败：{e}")),
@@ -183,13 +190,16 @@ async fn handle(
         Egress::Server { mux } => via_server(mux, &target, &path, peer, rebuilt).await,
     };
 
-    match result {
+    let mut response = match result {
         Ok(response) => response,
         Err(e) => {
             tracing::warn!(target = %target.url(), error = %e, "转发失败");
-            text(StatusCode::BAD_GATEWAY, format!("转发失败：{e}"))
+            return text(StatusCode::BAD_GATEWAY, format!("转发失败：{e}"));
         }
-    }
+    };
+
+    upgrade::bridge_if_upgraded(client_upgrade, &mut response);
+    response
 }
 
 fn authorized(req: &Request<Incoming>, expected: &str) -> bool {
@@ -245,9 +255,7 @@ async fn via_server(
     let mut builder = Request::builder()
         .method(parts.method)
         .uri(target.path_and_query.clone());
-    *builder
-        .headers_mut()
-        .expect("builder 在 body 之前总是可写") = headers;
+    *builder.headers_mut().expect("builder 在 body 之前总是可写") = headers;
 
     let outbound = builder.body(body.map_err(|e| -> BoxError { Box::new(e) }).boxed())?;
     let response = sender.send_request(outbound).await?;

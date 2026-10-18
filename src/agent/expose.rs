@@ -12,6 +12,7 @@ use tokio::net::TcpStream;
 use yamux::{Mode as YamuxMode, Stream};
 
 use crate::common::body::{BoxError, BoxedBody, text};
+use crate::common::upgrade;
 use crate::proto::{self, Frame, Hello, MAX_FRAME_LEN, Mode};
 use crate::transport;
 
@@ -25,7 +26,8 @@ pub async fn run(
     let socket = TcpStream::connect(server).await?;
     let _ = socket.set_nodelay(true);
 
-    let (mux, mut inbound, join) = transport::spawn(socket, YamuxMode::Client, transport::default_config());
+    let (mux, mut inbound, join) =
+        transport::spawn(socket, YamuxMode::Client, transport::default_config());
 
     let mut control = transport::into_tokio(mux.open().await?);
     let mut hello = Hello::new(token, Mode::Expose);
@@ -79,17 +81,22 @@ async fn serve_stream(stream: Stream, local: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn forward_local(req: Request<Incoming>, local: String) -> Response<BoxedBody> {
-    match try_forward(req, &local).await {
+async fn forward_local(mut req: Request<Incoming>, local: String) -> Response<BoxedBody> {
+    let client_upgrade = upgrade::take_client(&mut req);
+
+    let mut response = match try_forward(req, &local).await {
         Ok(response) => response,
         Err(e) => {
             tracing::warn!(%local, error = %e, "本地服务不可达");
-            text(
+            return text(
                 StatusCode::BAD_GATEWAY,
                 format!("本地服务 {local} 不可达：{e}"),
-            )
+            );
         }
-    }
+    };
+
+    upgrade::bridge_if_upgraded(client_upgrade, &mut response);
+    response
 }
 
 async fn try_forward(req: Request<Incoming>, local: &str) -> anyhow::Result<Response<BoxedBody>> {
@@ -109,9 +116,7 @@ async fn try_forward(req: Request<Incoming>, local: &str) -> anyhow::Result<Resp
         .unwrap_or_else(|| "/".to_string());
 
     let mut builder = Request::builder().method(parts.method).uri(path);
-    *builder
-        .headers_mut()
-        .expect("builder 在 body 之前总是可写") = parts.headers;
+    *builder.headers_mut().expect("builder 在 body 之前总是可写") = parts.headers;
 
     let outbound = builder.body(body.map_err(|e| -> BoxError { Box::new(e) }).boxed())?;
     let response = sender.send_request(outbound).await?;
