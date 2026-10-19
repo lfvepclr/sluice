@@ -69,6 +69,20 @@ tail -f /var/log/sluice.log
 | 启动即退出，日志有字段名 | 配置校验失败，按提示补字段 |
 | 80 端口被占用 | 先 `ss -lntp \| grep :80` 看是谁 |
 | 客户端连不上控制面 | 云安全组是否放行 7835 |
+| ACME 报 `TXT 传播超时` | 见下方「DuckDNS TXT 注意事项」 |
+| ACME 报 `POST-as-GET requests must have an empty payload` | 客户端把 CSR 发到了 order 端点——确认客户端从订单对象读 `finalize` 字段，而不是拼接 `{order_url}/finalize` |
+| 外部访问 80 端口被重置（本机正常） | 上游 ISP/托管防火墙拦截入站 HTTP。改用 8443 入口（证书链完整，浏览器可直接访问） |
+
+### DuckDNS TXT 注意事项（ACME DNS-01）
+
+- 权威 NS 是最终一致的多副本，写入后**全部副本同步需要 1–2 分钟**；sluice
+  会直查所有权威副本确认一致后才触发校验，等待预算 5 分钟。
+- 对同一域名**高频写入会被静默丢弃**（返回 OK 但不生效）。签发只在首次与
+  剩余 <30 天时发生，正常使用不会触发；手动反复测试时注意间隔 ≥5 分钟。
+- 首次签发约 10 秒～2 分钟（取决于 DNS 传播）；日志关键字 `证书签发成功`。
+- staging 试跑：`/etc/conf.d/sluice` 加 `SLUICE_ACME_STAGING=1`，通过后删除并
+  **同时删除 `/var/lib/sluice/certs/` 下的 pem 文件**（staging 证书有 90 天
+  有效期，缓存机制不会自动重签），再 `rc-service sluice restart`。
 
 ## 5. 与既有服务共存
 
