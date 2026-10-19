@@ -31,7 +31,8 @@ const LETSENCRYPT_STAGING: &str = "https://acme-staging-v02.api.letsencrypt.org/
 
 /// 签发结果。
 pub struct Issued {
-    pub cert_der: Vec<u8>,
+    /// 完整证书链（叶子在前，中间证书随后）。
+    pub chain_der: Vec<Vec<u8>>,
     pub key_der: Vec<u8>,
 }
 
@@ -599,15 +600,15 @@ pub async fn issue(cfg: &ServerConfig) -> Result<Issued> {
         anyhow::bail!("下载证书失败：{}", cert_response.status);
     }
 
-    // 响应是 PEM 链：落盘全链，取叶子 DER 给 rustls
+    // 响应是 PEM 链：落盘全链，叶子+中间证书一起热替换给 rustls
     let chain_pem = cert_response.text();
     let chain = rustls_pemfile::certs(&mut chain_pem.as_bytes())
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("证书链解析失败")?;
-    let leaf = chain
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("证书链为空"))?
-        .to_vec();
+    if chain.is_empty() {
+        anyhow::bail!("证书链为空");
+    }
+    let chain_der: Vec<Vec<u8>> = chain.into_iter().map(|c| c.to_vec()).collect();
 
     std::fs::create_dir_all(&cfg.tls.cert_dir).ok();
     write_secure(
@@ -620,10 +621,7 @@ pub async fn issue(cfg: &ServerConfig) -> Result<Issued> {
     )?;
 
     tracing::info!(%wildcard, "证书签发成功");
-    Ok(Issued {
-        cert_der: leaf,
-        key_der,
-    })
+    Ok(Issued { chain_der, key_der })
 }
 
 /// 证书剩余天数。
@@ -659,7 +657,7 @@ pub fn spawn(
             if need {
                 match issue(&cfg).await {
                     Ok(issued) => {
-                        match store.replace(issued.cert_der, issued.key_der) {
+                        match store.replace(issued.chain_der, issued.key_der) {
                             Ok(()) => tracing::info!("证书已热替换"),
                             Err(e) => tracing::error!(error = %e, "装载新证书失败"),
                         }

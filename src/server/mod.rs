@@ -162,13 +162,13 @@ fn build_cert_store(cfg: &ServerConfig) -> anyhow::Result<(Arc<tls::CertStore>, 
             Ok((store, false))
         }
         TlsMode::Files => {
-            let (cert, key) = tls::load_files(&cfg.tls.cert_dir)?;
-            Ok((tls::CertStore::from_der(cert, key)?, false))
+            let (chain, key) = tls::load_files(&cfg.tls.cert_dir)?;
+            Ok((tls::CertStore::from_der_chain(chain, key)?, false))
         }
         TlsMode::Acme => {
             // 有缓存证书就直接用，后台再按剩余天数决定是否续期
-            if let Ok((cert, key)) = tls::load_files(&cfg.tls.cert_dir) {
-                return Ok((tls::CertStore::from_der(cert, key)?, false));
+            if let Ok((chain, key)) = tls::load_files(&cfg.tls.cert_dir) {
+                return Ok((tls::CertStore::from_der_chain(chain, key)?, false));
             }
             // 没有证书：先用 7 天自签顶住，后台立即签发并热替换
             tracing::warn!("尚无证书，先用临时自签证书，后台正在向 Let's Encrypt 申请");

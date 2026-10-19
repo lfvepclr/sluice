@@ -28,25 +28,34 @@ impl std::fmt::Debug for CertStore {
 }
 
 impl CertStore {
-    /// 从 DER 编码的证书与 PKCS#8 私钥构造。
-    pub fn from_der(cert_der: Vec<u8>, key_der: Vec<u8>) -> Result<Arc<Self>> {
-        let certified = build_certified(cert_der, key_der)?;
+    /// 从 DER 编码的证书链（[叶子, 中间, ...]）与 PKCS#8 私钥构造。
+    ///
+    /// 必须传入完整链：只发叶子证书时客户端无法验证到根，浏览器/ curl
+    /// 会报证书链不完整。
+    pub fn from_der_chain(chain_der: Vec<Vec<u8>>, key_der: Vec<u8>) -> Result<Arc<Self>> {
+        if chain_der.is_empty() {
+            anyhow::bail!("证书链为空");
+        }
+        let certified = build_certified(&chain_der, &key_der)?;
         Ok(Arc::new(Self {
             current: ArcSwap::from_pointee(certified),
         }))
     }
 
-    /// 热替换证书。失败时旧证书保持生效。
-    pub fn replace(&self, cert_der: Vec<u8>, key_der: Vec<u8>) -> Result<()> {
-        let certified = build_certified(cert_der, key_der)?;
+    /// 热替换证书链。失败时旧证书保持生效。
+    pub fn replace(&self, chain_der: Vec<Vec<u8>>, key_der: Vec<u8>) -> Result<()> {
+        if chain_der.is_empty() {
+            anyhow::bail!("证书链为空");
+        }
+        let certified = build_certified(&chain_der, &key_der)?;
         self.current.store(Arc::new(certified));
         Ok(())
     }
 
-    /// 生成自签证书并装入。
+    /// 生成自签证书并装入（单证书链）。
     pub fn self_signed(domains: &[&str], days: u32) -> Result<Arc<Self>> {
         let generated = certgen::self_signed(domains, days)?;
-        Self::from_der(generated.cert_der, generated.key_der)
+        Self::from_der_chain(vec![generated.cert_der], generated.key_der)
     }
 
     /// 当前叶子证书的剩余有效天数。解析失败按 -1 处理由调用方决定是否重签。
@@ -65,13 +74,16 @@ impl ResolvesServerCert for CertStore {
     }
 }
 
-fn build_certified(cert_der: Vec<u8>, key_der: Vec<u8>) -> Result<CertifiedKey> {
+fn build_certified(chain_der: &[Vec<u8>], key_der: &[u8]) -> Result<CertifiedKey> {
     // rustls 的 from_der 不校验公私钥是否配对，配错了要到握手时才炸。
-    // 这里显式比对证书 SPKI 与私钥导出的公钥，把问题挡在启动阶段。
-    validate_pair(&cert_der, &key_der)?;
+    // 这里显式比对叶子证书 SPKI 与私钥导出的公钥，把问题挡在启动阶段。
+    validate_pair(&chain_der[0], key_der)?;
 
-    let chain = vec![CertificateDer::from(cert_der)];
-    let key = PrivateKeyDer::Pkcs8(key_der.into());
+    let chain: Vec<CertificateDer<'static>> = chain_der
+        .iter()
+        .map(|c| CertificateDer::from(c.clone()))
+        .collect();
+    let key = PrivateKeyDer::Pkcs8(key_der.to_vec().into());
     CertifiedKey::from_der(chain, key, &crate::common::crypto::provider())
         .context("证书或私钥格式非法")
 }
@@ -111,8 +123,8 @@ pub fn acceptor(store: Arc<CertStore>) -> Result<TlsAcceptor> {
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
-/// 从目录读取 `fullchain.pem` 与 `privkey.pem`，返回 DER。
-pub fn load_files(dir: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
+/// 从目录读取 `fullchain.pem` 与 `privkey.pem`，返回完整证书链与私钥 DER。
+pub fn load_files(dir: &Path) -> Result<(Vec<Vec<u8>>, Vec<u8>)> {
     let cert_path = dir.join("fullchain.pem");
     let key_path = dir.join("privkey.pem");
 
@@ -124,15 +136,18 @@ pub fn load_files(dir: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
     let certs = rustls_pemfile::certs(&mut cert_pem.as_slice())
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("证书 PEM 解析失败")?;
-    let Some(first) = certs.into_iter().next() else {
+    if certs.is_empty() {
         anyhow::bail!("{} 里没有证书", cert_path.display());
-    };
+    }
 
     let key = rustls_pemfile::private_key(&mut key_pem.as_slice())
         .context("私钥 PEM 解析失败")?
         .ok_or_else(|| anyhow::anyhow!("{} 里没有私钥", key_path.display()))?;
 
-    Ok((first.to_vec(), key.secret_der().to_vec()))
+    Ok((
+        certs.into_iter().map(|c| c.to_vec()).collect(),
+        key.secret_der().to_vec(),
+    ))
 }
 
 #[cfg(test)]
@@ -143,9 +158,10 @@ mod tests {
     fn loads_self_signed_and_replaces() {
         let store = CertStore::self_signed(&["localhost"], 30).unwrap();
 
-        // 换一张新证书应当成功
+        // 换一张新证书（含中间证书的多级链）应当成功
         let another = certgen::self_signed(&["localhost"], 10).unwrap();
-        store.replace(another.cert_der, another.key_der).unwrap();
+        let chain = vec![another.cert_der.clone(), another.cert_der.clone()];
+        store.replace(chain, another.key_der).unwrap();
     }
 
     #[test]
@@ -153,6 +169,12 @@ mod tests {
         let a = certgen::self_signed(&["a.local"], 30).unwrap();
         let b = certgen::self_signed(&["b.local"], 30).unwrap();
         // 用 a 的证书配 b 的私钥，必须失败
-        assert!(CertStore::from_der(a.cert_der, b.key_der).is_err());
+        assert!(CertStore::from_der_chain(vec![a.cert_der], b.key_der).is_err());
+    }
+
+    #[test]
+    fn empty_chain_is_rejected() {
+        let g = certgen::self_signed(&["a.local"], 30).unwrap();
+        assert!(CertStore::from_der_chain(Vec::new(), g.key_der).is_err());
     }
 }

@@ -174,8 +174,8 @@ async fn bind_check(name: &'static str, addr: SocketAddr) -> Check {
 fn check_certificate(cfg: &ServerConfig) -> Check {
     let name = "证书有效期";
 
-    let (cert_pem, key_pem) = match tls::load_files(&cfg.tls.cert_dir) {
-        Ok((cert, key)) => (cert, key),
+    let (chain, key) = match tls::load_files(&cfg.tls.cert_dir) {
+        Ok((chain, key)) => (chain, key),
         Err(e) => {
             let level = match cfg.tls.mode {
                 // ACME 模式会用 7 天自签顶住并自动签发，缺证书只是暂态
@@ -186,7 +186,7 @@ fn check_certificate(cfg: &ServerConfig) -> Check {
         }
     };
 
-    match tls::CertStore::from_der(cert_pem, key_pem) {
+    match tls::CertStore::from_der_chain(chain, key) {
         Ok(store) => match store.days_left() {
             Ok(days) if days < 7 => {
                 Check::new(name, Level::Fail, format!("仅剩 {days} 天，须立即续期"))

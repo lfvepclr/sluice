@@ -96,7 +96,7 @@ fn cert_store_days_left_roundtrip() {
 
     // 换一张只剩 1 天的证书，剩余天数应跟着变
     let short = certgen::self_signed(&["demo.invalid"], 1).unwrap();
-    store.replace(short.cert_der, short.key_der).unwrap();
+    store.replace(vec![short.cert_der], short.key_der).unwrap();
     let left = store.days_left().unwrap();
     assert!((0..=1).contains(&left));
 }
