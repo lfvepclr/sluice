@@ -21,8 +21,15 @@ respawn_delay=5
 respawn_max=0
 respawn_period=60
 
+# 日志由 sluice 自己按天滚动（/var/log/sluice/sluice.log.YYYY-MM-DD，保留 7 天）；
+# 这两个文件只承接 stdout 的启动摘要与 stderr 的 panic 输出。
 output_log="/var/log/sluice.log"
 error_log="/var/log/sluice.log"
+
+start_pre() {
+	# 服务以非 root 运行，日志目录需提前建好并归属服务用户
+	checkpath -d -m 0750 -o sluice:sluice /var/log/sluice
+}
 
 rc_ulimit="-n 65535"
 

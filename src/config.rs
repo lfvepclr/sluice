@@ -158,6 +158,32 @@ pub struct TlsConfig {
     pub cert_dir: PathBuf,
 }
 
+/// 入口直连转发（`/https://host/path` 直接打到服务器出口）的鉴权档位。
+///
+/// 默认 `off`：仍要求 agent 在线——客户端连接自带认证，也最不容易被扫到滥用。
+/// `open` 档任何人都能借服务器出网刷流量，只在明确配置时生效。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DirectMode {
+    /// 关闭：路径转发热词不拦截，保持隧道语义。
+    #[default]
+    Off,
+    /// 开启但要求 token：`Authorization: Bearer <token>` 头或 `__token=` 查询参数。
+    Token,
+    /// 完全开放：无需任何凭据（有被第三方滥用的风险）。
+    Open,
+}
+
+impl fmt::Display for DirectMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Off => "off",
+            Self::Token => "token",
+            Self::Open => "open",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForwardConfig {
@@ -170,6 +196,9 @@ pub struct ForwardConfig {
     /// 请求体上限（MiB）。
     #[serde(default = "default_max_body_mib")]
     pub max_body_mib: u64,
+    /// 入口直连转发档位，默认关闭（见 [`DirectMode`]）。
+    #[serde(default)]
+    pub direct: DirectMode,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -245,6 +274,7 @@ impl Default for ForwardConfig {
             allow_private: false,
             allow_hosts: Vec::new(),
             max_body_mib: default_max_body_mib(),
+            direct: DirectMode::Off,
         }
     }
 }
@@ -620,6 +650,42 @@ typo_field = 1
     fn egress_mode_roundtrip() {
         assert_eq!(EgressMode::default(), EgressMode::Server);
         assert_eq!(EgressMode::Local.to_string(), "local");
+    }
+
+    #[test]
+    fn direct_mode_defaults_to_off_and_parses() {
+        // 缺省 = off：默认仍要求客户端在线
+        let text = r#"
+base_domain = "demo.duckdns.org"
+token = "0123456789abcdef"
+"#;
+        let cfg: ServerConfig = toml::from_str(text).unwrap();
+        assert_eq!(cfg.forward.direct, DirectMode::Off);
+
+        let parse_direct = |s: &str| {
+            toml::from_str::<ServerConfig>(&format!(
+                r#"
+base_domain = "demo.duckdns.org"
+token = "0123456789abcdef"
+[forward]
+direct = "{s}"
+"#
+            ))
+            .unwrap()
+            .forward
+            .direct
+        };
+        assert_eq!(parse_direct("token"), DirectMode::Token);
+        assert_eq!(parse_direct("open"), DirectMode::Open);
+        assert_eq!(parse_direct("off"), DirectMode::Off);
+        // 非法档位必须被拒绝（deny_unknown_fields 兜不住枚举值错误）
+        let bad = r#"
+base_domain = "demo.duckdns.org"
+token = "0123456789abcdef"
+[forward]
+direct = "yes"
+"#;
+        assert!(toml::from_str::<ServerConfig>(bad).is_err());
     }
 
     #[test]

@@ -7,14 +7,16 @@ use std::sync::Arc;
 use http::{Request, Response, StatusCode, header::HOST};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
-use super::{App, tunnel};
+use super::{App, direct, tunnel};
 use crate::common::body::{BoxedBody, text};
 use crate::common::upgrade;
+use crate::config::DirectMode;
 
 /// 健康检查路径，用于外部探测与 benchmark 基线。
 pub const HEALTH_PATH: &str = "/__sluice/health";
@@ -67,9 +69,10 @@ where
         async move { Ok::<_, Infallible>(handle(app, req, peer, scheme).await) }
     });
 
-    if let Err(e) = hyper::server::conn::http1::Builder::new()
-        .serve_connection(io, service)
-        .with_upgrades()
+    // auto Builder 同时承接 HTTP/1.1 与 HTTP/2（TLS 侧 ALPN + preface 嗅探双保险），
+    // WebSocket 等升级经 with_upgrades 透传。
+    if let Err(e) = auto::Builder::new(TokioExecutor::new())
+        .serve_connection_with_upgrades(io, service)
         .await
     {
         tracing::debug!(%peer, error = %e, "连接结束");
@@ -84,6 +87,11 @@ async fn handle(
 ) -> Response<BoxedBody> {
     if req.uri().path() == HEALTH_PATH {
         return text(StatusCode::OK, "ok");
+    }
+
+    // 直连转发热词：direct=off 时不拦截，保持隧道语义
+    if app.cfg.forward.direct != DirectMode::Off && direct::matches(req.uri().path()) {
+        return direct::handle(app, req, peer).await;
     }
 
     let Some(host) = req

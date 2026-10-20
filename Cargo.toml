@@ -24,8 +24,8 @@ dashmap = "6"
 dialoguer = "0.11"
 http = "1"
 http-body-util = "0.1"
-hyper = { version = "1", features = ["server", "client", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
+hyper = { version = "1", features = ["server", "client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
 rand = "0.8"
 rustls-pemfile = "2"
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
@@ -41,6 +41,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"
 tokio-util = { version = "0.7", features = ["compat"] }
 toml = "0.8"
 tracing = "0.1"
+tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 webpki-roots = "0.26"
 x509-cert = { version = "0.2", features = ["builder"] }

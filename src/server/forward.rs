@@ -101,7 +101,9 @@ async fn handle(
 }
 
 /// 白名单与网段校验。返回需要固定的 IP（防 DNS rebinding）。
-async fn check_target(app: &App, target: &Target) -> Result<Option<IpAddr>, String> {
+///
+/// forward 流与入口直连转发共用这一道 SSRF 关口。
+pub(crate) async fn check_target(app: &App, target: &Target) -> Result<Option<IpAddr>, String> {
     if !app.cfg.forward.allow_hosts.is_empty() {
         let allowed = app
             .cfg

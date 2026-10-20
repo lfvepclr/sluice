@@ -261,6 +261,7 @@ impl Bench {
                 allow_private: true,
                 allow_hosts: Vec::new(),
                 max_body_mib: 100,
+                direct: Default::default(),
             },
             limits: Default::default(),
         };

@@ -87,9 +87,12 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    init_tracing();
-
     let cli = Cli::parse();
+    // 服务器以服务方式运行（非 TTY）时日志走日切文件，防 /var/log 无限增长；
+    // 交互终端与其他命令保持 stdout。
+    let rolling =
+        matches!(cli.command, Some(Command::Server { .. })) && !std::io::stdout().is_terminal();
+    let _log_guard = init_tracing(rolling);
 
     // 裸跑：TTY 进向导，非 TTY 打帮助（绝不进 dialoguer，会挂死管道）
     let command = match cli.command {
@@ -145,13 +148,53 @@ fn main() -> ExitCode {
     }
 }
 
-fn init_tracing() {
+/// 服务端日志目录（日切文件 `sluice.log.YYYY-MM-DD`，保留 7 天）。
+const LOG_DIR: &str = "/var/log/sluice";
+
+/// 初始化日志。`rolling = true` 时额外写入日切文件；文件目录建不出来
+/// （权限不足等）则降级为仅 stdout，不阻断启动。
+///
+/// 返回 non-blocking writer 的 guard，必须留在 main 的作用域里。
+fn init_tracing(rolling: bool) -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let filter = tracing_subscriber::EnvFilter::try_from_env("SLUICE_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt()
+
+    let fmt = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_target(false)
-        .init();
+        .with_target(false);
+
+    if !rolling {
+        fmt.init();
+        return None;
+    }
+
+    // tracing-appender 不会创建父目录，且目录不可写时错误只在后台线程暴露
+    // （日志静默丢失）。这里先显式建目录，建不出来立即降级 stdout。
+    if let Err(e) = std::fs::create_dir_all(LOG_DIR) {
+        tracing::warn!(error = %e, "无法创建 {LOG_DIR}，日志降级为仅 stdout");
+        fmt.init();
+        return None;
+    }
+
+    match tracing_appender::rolling::RollingFileAppender::builder()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("sluice")
+        .filename_suffix("log")
+        .max_log_files(7)
+        .build(LOG_DIR)
+        .map_err(|e| anyhow::anyhow!("日志文件初始化失败：{e}"))
+    {
+        Ok(appender) => {
+            let (writer, guard) = tracing_appender::non_blocking(appender);
+            fmt.with_writer(writer).init();
+            Some(guard)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "无法创建 {LOG_DIR}，日志降级为仅 stdout");
+            fmt.init();
+            None
+        }
+    }
 }
 
 fn run_server(path: &Path) -> anyhow::Result<()> {

@@ -114,11 +114,14 @@ fn validate_pair(cert_der: &[u8], key_der: &[u8]) -> Result<()> {
 
 /// 构造 TLS acceptor，证书解析走 `CertStore`。
 pub fn acceptor(store: Arc<CertStore>) -> Result<TlsAcceptor> {
-    let config = ServerConfig::builder_with_provider(crate::common::crypto::provider())
+    let mut config = ServerConfig::builder_with_provider(crate::common::crypto::provider())
         .with_safe_default_protocol_versions()
         .context("TLS 协议版本配置失败")?
         .with_no_client_auth()
         .with_cert_resolver(store);
+
+    // 入口协商 h2/http1.1；agent 的控制面客户端不提供 ALPN，不受影响
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(TlsAcceptor::from(Arc::new(config)))
 }

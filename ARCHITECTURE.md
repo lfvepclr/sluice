@@ -94,6 +94,17 @@ accept(127.0.0.1:1234) → parse_target(path)
 
 同上，去掉开流，agent 直接 reqwest 出网，不连服务器。
 
+### direct（入口直连转发，可选）
+
+```
+accept(80/8443) → 路径是 /http(s)://… 热词 且 direct != off
+  → direct=token 时校验 Bearer/__token（401）
+  → parse_target → SSRF 校验 + pin IP（与 forward 同一关口）
+  → 服务器直接出网 → 响应流回灌
+```
+
+`off`（默认）不拦截热词，保持隧道语义；`open` 无鉴权，滥用风险自担。
+
 ## 5. 关键决策
 
 | 决策 | 选择 | 理由 |
@@ -103,10 +114,12 @@ accept(127.0.0.1:1234) → parse_target(path)
 | 控制端口 | 7835 独立 | 443 被既有服务占用，先解耦 |
 | 服务器认证 | Hello 帧内 bearer token + 常数时间比较 | TLS 已保证机密性 |
 | 服务器证书校验 | SPKI 指纹 TOFU | 控制面走 IP/自签，域名校验不适用 |
-| ALPN | 只开 http/1.1 | h2 无 Upgrade（RFC 8441 hyper 不支持），与 WebSocket 冲突 |
+| 入口 ALPN | h2 + http/1.1（hyper-util auto 按预言情商） | 浏览器与直连转发受益于 h2；隧道内 WebSocket 走 h1，h2 无 Upgrade（RFC 8441 hyper 不支持） |
+| 直连转发 | 三态 off/token/open，默认 off | off=默认要求客户端（连接自带认证，最不易被滥用）；open 有被借道刷流量的风险 |
 | 子域名 | 6 位 31 字符表 | 31^6 ≈ 8.9 亿，够用且好念 |
 | 证书 | 通配 + DNS-01 | 随机子域名无法逐张 HTTP-01 |
 | 入口 | 80 + 8443 | 443 让给既有服务；80 直接服务不强制跳转 |
+| 日志 | 服务方式运行时日切文件，保留 7 天 | /var/log 不能无限增长；交互终端保持 stdout |
 
 ## 6. 性能约束
 
@@ -123,6 +136,7 @@ accept(127.0.0.1:1234) → parse_target(path)
 | --- | --- |
 | 控制通道 | TLS 1.3 + token + SPKI 指纹固定 |
 | 开放代理 | 非回环监听强制 token；默认仅 127.0.0.1 |
+| 直连转发 | 默认 off；token 档 Bearer/`__token=` 常数时间比较；请求体与 forward 共用 max_body_mib |
 | SSRF | 内网/元数据网段拒绝 + 可选白名单 + 重定向跳数限制 + 解析结果 pin IP |
 | 密钥落盘 | 配置与私钥 0600，启动检查权限 |
 | 信息泄露 | `Server` 头统一为 `sluice` |
