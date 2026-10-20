@@ -4,6 +4,7 @@
 //! 首次连接记录指纹，之后必须一致，否则拒绝——这比域名校验更强。
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -81,6 +82,49 @@ impl ServerCertVerifier for PinnedVerifier {
             SignatureScheme::ED25519,
         ]
     }
+}
+
+/// 首连重试上限与间隔。服务端冷启动（OpenRC 拉起顺序、容器启动）通常几秒内
+/// 就绪，5 次 × 1 秒足够；这个值是内置最优解，不暴露成调参项。
+const CONNECT_RETRIES: usize = 5;
+const CONNECT_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// 带首连重试的 [`connect`]：仅对「服务器暂时不可达」类错误重试
+/// （服务端未就绪时的 Connection refused 最常见）。
+/// TLS/指纹错误重试没有意义，立即返回。
+pub async fn connect_retry(
+    server: &str,
+    expected_pin: Option<&str>,
+) -> Result<(TlsStream<TcpStream>, String)> {
+    for attempt in 1..=CONNECT_RETRIES {
+        match connect(server, expected_pin).await {
+            Ok(v) => return Ok(v),
+            Err(e) if is_transient(&e) => {
+                if attempt < CONNECT_RETRIES {
+                    tracing::warn!(%server, attempt, "服务器暂不可达，{CONNECT_RETRY_DELAY:?} 后重试");
+                    tokio::time::sleep(CONNECT_RETRY_DELAY).await;
+                } else {
+                    return Err(e);
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("循环内必然返回")
+}
+
+/// 是否为值得重试的瞬时网络错误。
+fn is_transient(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::NetworkUnreachable
+            )
+        })
+    })
 }
 
 /// 建立 TLS 连接，返回连接与服务器证书指纹。
